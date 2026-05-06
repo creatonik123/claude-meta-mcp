@@ -93,6 +93,73 @@ export class MetaClient {
   }
 
   /**
+   * POST a multipart/form-data request. Used for Ad Image uploads (small),
+   * for unchunked video uploads, and for the start/finish phases of chunked
+   * video uploads. The `parts` map can contain strings, numbers, booleans
+   * (sent as form fields) or Blobs (sent as file parts).
+   */
+  async postMultipart<T = unknown>(
+    path: string,
+    parts: Record<string, string | number | boolean | Blob | undefined>,
+    params: Record<string, string | number | boolean | undefined> = {}
+  ): Promise<T> {
+    const finalParams: Record<string, string | number | boolean> = {
+      access_token: this.accessToken,
+    };
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) finalParams[key] = value;
+    }
+    const form = new FormData();
+    for (const [key, value] of Object.entries(parts)) {
+      if (value === undefined) continue;
+      if (value instanceof Blob) {
+        form.append(key, value, (value as { name?: string }).name ?? "upload");
+      } else {
+        form.append(key, String(value));
+      }
+    }
+    try {
+      const response = await this.http.post<T>(path, form, {
+        params: finalParams,
+        // axios + Node 22 FormData: let axios pick the boundary
+        headers: { "Content-Type": "multipart/form-data" },
+        // Increase limits for video uploads
+        maxBodyLength: 200 * 1024 * 1024,
+        maxContentLength: 200 * 1024 * 1024,
+      });
+      return response.data;
+    } catch (err) {
+      throw this.wrap(err);
+    }
+  }
+
+  /**
+   * Fetch binary content from a URL into a Blob, or decode a base64 payload.
+   * Tools accept either `url` or `data_base64` — this normalizes both.
+   */
+  async fetchAsBlob(input: { url?: string; data_base64?: string; mime?: string; filename?: string }): Promise<Blob> {
+    if (input.url) {
+      const res = await fetch(input.url);
+      if (!res.ok) {
+        throw new Error(`Failed to download asset (${res.status} ${res.statusText}) from ${input.url}`);
+      }
+      const buf = await res.arrayBuffer();
+      const type = input.mime ?? res.headers.get("content-type") ?? "application/octet-stream";
+      const blob = new Blob([buf], { type });
+      Object.assign(blob, { name: input.filename ?? "upload.bin" });
+      return blob;
+    }
+    if (input.data_base64) {
+      const buf = Buffer.from(input.data_base64, "base64");
+      const type = input.mime ?? "application/octet-stream";
+      const blob = new Blob([buf], { type });
+      Object.assign(blob, { name: input.filename ?? "upload.bin" });
+      return blob;
+    }
+    throw new Error("Provide either `url` or `data_base64` for the asset");
+  }
+
+  /**
    * DELETE a Graph API resource. Returns Graph's `{ success: true }` payload.
    */
   async delete<T = unknown>(

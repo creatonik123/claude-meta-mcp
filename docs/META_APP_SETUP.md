@@ -34,20 +34,22 @@ Total time: ~20 minutes if you already have a Business Portfolio, ~40 if you nee
 
 ## 2. Pick the Use Cases
 
-Meta replaced the old "select permissions individually" flow with a **Use Case wizard** in 2024–2025. The "Other" option is being deprecated. You need to pick **two specific use cases** to get the right permission bundle for this connector:
+Meta replaced the old "select permissions individually" flow with a **Use Case wizard** in 2024–2025. The "Other" option is being deprecated. To unlock the full v0.3 toolset (Ads CRUD + Instagram publishing + Pages), pick **four use cases**:
 
 In **Use cases → Add use case**:
 
 | ✓ | Use Case | What it provides |
 |---|---|---|
-| ✅ | **Measure ad performance with Marketing API** | `ads_read`, `business_management`, `read_insights`, `ads_management_standard_access` |
+| ✅ | **Measure ad performance with Marketing API** | `ads_read`, `business_management`, `read_insights` |
+| ✅ | **Create and manage ads with Marketing API** | `ads_management`, `business_management` |
 | ✅ | **Manage everything on your Page** | `pages_show_list`, `pages_manage_posts`, `pages_manage_metadata`, `pages_read_engagement` |
+| ✅ | **Manage messaging and content on Instagram** | `instagram_basic`, `instagram_content_publish`, `instagram_manage_comments`, `instagram_manage_insights` |
 
-That's it — these two together cover all 13 tools the connector exposes.
+Together these cover all v0.3 tools (~38 tools total).
 
-> **Don't pick** "Create and manage ads with Marketing API" unless you actually plan to mutate campaigns. The connector's Ads tools are intentionally read-only, so you don't need `ads_management`.
+> **`instagram_manage_messages` (DM access)** is intentionally NOT enabled here. Even for own accounts Meta requires App Review for that scope. If you need DM tools later, submit for App Review separately — the connector currently doesn't expose any DM tool.
 
-After selecting both use cases, the App's **Permissions and Features** tab will show all 6 permissions as **"Standard Access" (granted by default)**. You don't need to submit anything for App Review for a self-hosted single-tenant deployment.
+After selecting these use cases, the App's **Permissions and Features** tab will show every permission as **"Standard Access" (granted by default)** for own assets. You don't need to submit anything for App Review for a self-hosted single-tenant deployment with your own ad accounts and IG Business accounts.
 
 ## 3. Attach the App to a Business Portfolio
 
@@ -98,14 +100,23 @@ Still in the System User detail panel:
 1. Tab **Tokens** → **Generate New Token**
 2. **Select App**: pick `claude-meta-mcp` (this binds the token's signing keys to your app)
 3. **Token expiration**: choose **Never** — this is the whole point of a System User token
-4. **Permissions** — check all of these:
+4. **Permissions** — check all of these (full v0.3 toolset):
    - `ads_read`
+   - `ads_management`
    - `business_management`
    - `pages_show_list`
    - `pages_manage_posts`
    - `pages_manage_metadata`
    - `pages_read_engagement`
+   - `instagram_basic`
+   - `instagram_content_publish`
+   - `instagram_manage_comments`
+   - `instagram_manage_insights`
    - *(optional but harmless: `read_insights`)*
+
+   If you only want a subset of the toolset, you can omit scopes — the matching tools will then return 403 at runtime. Examples:
+   - Read-only Ads: only `ads_read` + `business_management` (no Ads CRUD, no IG, no Pages writes)
+   - Pages-only: drop the `ads_*` and `instagram_*` scopes
 5. **Generate Token** → the token appears once. Click the **Copy** button (do **not** select-and-copy the displayed string — Meta obfuscates it visually until you click the button).
 
 ## 7. Validate the token
@@ -204,7 +215,8 @@ Plan for one to several review rounds. v0.3 of `claude-meta-mcp` will ship the m
 
 ## What we deliberately do *not* request
 
-- `ads_management` — we don't mutate campaigns. Use the "Measure ad performance" use case (read-only) not "Create and manage ads".
-- `pages_read_user_content` — we don't moderate user-generated content / comments.
-- `instagram_basic`, `instagram_business_*` — Instagram support is parked for v0.2.x. As of 2026, all `instagram_business_*` scopes require Advanced Access (App Review).
-- `whatsapp_business_*` — out of scope.
+- `instagram_manage_messages` — Instagram DM access. Even for own accounts Meta requires App Review for this scope, and the connector currently exposes no DM tool. Submit for App Review separately if/when needed.
+- `pages_read_user_content` — we don't moderate user-generated content (Page-side comments, mentions). Page comment moderation is not in v0.3 scope.
+- `whatsapp_business_messaging`, `whatsapp_business_management` — WhatsApp Business is out of scope for the connector.
+- `catalog_management` — Commerce/Catalog API is out of scope.
+- `leads_retrieval` — Lead Ads retrieval is out of scope.

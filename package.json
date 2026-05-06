@@ -1,7 +1,7 @@
 {
   "name": "claude-meta-mcp",
-  "version": "0.2.0",
-  "description": "Self-hosted Meta connector for Claude — Streamable HTTP MCP server. Read Meta Ads data and read+write Facebook Page posts.",
+  "version": "0.3.0",
+  "description": "Self-hosted Meta connector for Claude — Streamable HTTP MCP server. Read+write Meta Ads, Facebook Pages and Instagram Business accounts.",
   "license": "MIT",
   "author": "Markus Stöger <hi@markusstoeger.com> (https://markusstoeger.com)",
   "homepage": "https://markusstoeger.com/repos#claude-meta-mcp",

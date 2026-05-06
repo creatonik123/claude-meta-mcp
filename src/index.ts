@@ -18,8 +18,10 @@ import { config } from "./config.js";
 import { MetaClient } from "./meta-client.js";
 import { MetaApiError } from "./meta-client.js";
 import { registerTools } from "./tools.js";
+import { registerWriteTools } from "./tools-write.js";
+import { registerInstagramTools } from "./tools-instagram.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.3.0";
 
 function log(
   level: "debug" | "info" | "warn" | "error",
@@ -62,6 +64,8 @@ async function main(): Promise<void> {
     version: VERSION,
   });
   registerTools(mcp, meta);
+  registerWriteTools(mcp, meta);
+  registerInstagramTools(mcp, meta);
 
   const app = express();
   app.disable("x-powered-by");

@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-06
+
+Added write tools for Meta Ads (campaign/ad set/ad CRUD + asset uploads + creatives) and full Instagram Business account support (publishing, comments, insights).
+
+### Added — Ads write
+- 5 asset upload tools: `upload_ad_image`, `list_ad_images`, `upload_ad_video`, `get_video_processing_status`, `list_ad_videos`
+- 9 Ads-side write tools: `create_campaign`, `update_campaign`, `delete_campaign`, `create_adset`, `update_adset`, `delete_adset`, `create_ad`, `update_ad`, `delete_ad`
+- 2 ad creative tools: `create_ad_creative`, `delete_ad_creative`
+- 1 QA tool: `preview_ad` (renders an ad preview HTML for any placement)
+- All write tools default to `status: PAUSED` for safety — explicit `ACTIVE` is required to launch ads
+
+### Added — Instagram Business
+- 11 Instagram tools:
+  - Discovery: `list_instagram_accounts`
+  - Read: `list_instagram_posts`, `get_instagram_insights`, `get_instagram_post_insights`
+  - Publish: `create_instagram_post` (image/video/reel/story), `create_instagram_carousel`, `delete_instagram_media`
+  - Comments: `list_instagram_comments`, `reply_instagram_comment`, `delete_instagram_comment`, `hide_instagram_comment`
+- Container-publish 2-phase flow with automatic FINISHED-polling for video/reel processing (up to 90s)
+
+### Added — Client
+- `MetaClient.postMultipart()` for multipart/form-data uploads (uses Node 22 native `FormData`/`Blob`)
+- `MetaClient.fetchAsBlob()` helper — accepts URL or base64 input, normalizes to Blob
+
+### Required scopes (System User token)
+The new tools require these additions to your existing v0.2 scopes:
+- `ads_management` (was: `ads_read` only)
+- `instagram_basic`, `instagram_content_publish`, `instagram_manage_comments`, `instagram_manage_insights`
+
+In the Meta Developer App, add the following Use Cases:
+- "Werbeanzeigen mit Marketing API erstellen und verwalten" (Create and manage ads)
+- "Messaging und Content auf Instagram verwalten" (Manage messaging and content on Instagram)
+
+For own ad accounts and own IG Business accounts, **no App Review is required** (Standard Access). Advanced Access (App Review + Business Verification) is only needed when other businesses' accounts are managed via this connector.
+
+### Breaking
+- None. Existing v0.2 tools continue to work unchanged. New tools are additive.
+
 ## [0.2.0] — 2026-05-06
 
 Added Facebook Pages support and switched the recommended token type to System User tokens.
