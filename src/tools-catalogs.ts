@@ -93,7 +93,7 @@ export function registerCatalogTools(server: McpServer, meta: MetaClient): void 
         `/${business_id}/owned_product_catalogs`,
         {
           fields:
-            "id,name,vertical,product_count,feed_count,store_count,da_display_settings",
+            "id,name,vertical,product_count,feed_count,da_display_settings",
           limit: limit ?? 25,
         }
       );
@@ -116,7 +116,7 @@ export function registerCatalogTools(server: McpServer, meta: MetaClient): void 
       const data = await meta.get(`/${catalog_id}`, {
         fields:
           fields ??
-          "id,name,vertical,product_count,feed_count,store_count,business,is_catalog_segment,catalog_store",
+          "id,name,vertical,product_count,feed_count,business,is_catalog_segment,default_image_url",
       });
       return asJson(data);
     }
