@@ -20,6 +20,7 @@ import { MetaApiError } from "./meta-client.js";
 import { registerTools } from "./tools.js";
 import { registerWriteTools } from "./tools-write.js";
 import { registerInstagramTools } from "./tools-instagram.js";
+import { registerCatalogTools } from "./tools-catalogs.js";
 
 const VERSION = "0.3.0";
 
@@ -66,6 +67,7 @@ async function main(): Promise<void> {
   registerTools(mcp, meta);
   registerWriteTools(mcp, meta);
   registerInstagramTools(mcp, meta);
+  registerCatalogTools(mcp, meta);
 
   const app = express();
   app.disable("x-powered-by");

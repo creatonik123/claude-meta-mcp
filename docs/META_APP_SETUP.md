@@ -112,6 +112,7 @@ Still in the System User detail panel:
    - `instagram_content_publish`
    - `instagram_manage_comments`
    - `instagram_manage_insights`
+   - `catalog_management` *(required for the v0.4 Product Catalog tools — list/get catalogs, feeds, products, diagnostics)*
    - *(optional but harmless: `read_insights`)*
 
    If you only want a subset of the toolset, you can omit scopes — the matching tools will then return 403 at runtime. Examples:
@@ -218,5 +219,4 @@ Plan for one to several review rounds. v0.3 of `claude-meta-mcp` will ship the m
 - `instagram_manage_messages` — Instagram DM access. Even for own accounts Meta requires App Review for this scope, and the connector currently exposes no DM tool. Submit for App Review separately if/when needed.
 - `pages_read_user_content` — we don't moderate user-generated content (Page-side comments, mentions). Page comment moderation is not in v0.3 scope.
 - `whatsapp_business_messaging`, `whatsapp_business_management` — WhatsApp Business is out of scope for the connector.
-- `catalog_management` — Commerce/Catalog API is out of scope.
 - `leads_retrieval` — Lead Ads retrieval is out of scope.
