@@ -6,12 +6,12 @@
 [![CI](https://github.com/maxx3250/claude-meta-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/maxx3250/claude-meta-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Streamable_HTTP-blue.svg)](https://modelcontextprotocol.io/)
-[![Status](https://img.shields.io/badge/status-v0.3_alpha-orange.svg)](./CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-v0.4_alpha-orange.svg)](./CHANGELOG.md)
 
-> **Status — v0.3.0 (single-tenant alpha).**
+> **Status — v0.4.0 (single-tenant alpha).**
 > One Meta System User token, one shared Bearer secret, no database. Perfect for personal use or a single agency account. Multi-tenant + OAuth 2.1 + DCR are on the roadmap (see [Roadmap](#roadmap)).
 >
-> **v0.3 adds full Ads CRUD (campaigns/ad sets/ads/creatives + image/video uploads) and Instagram Business publishing & comment moderation.** ~38 tools total.
+> **v0.4 adds read-only Product Catalog tools** (catalog discovery, feeds, products, diagnostics) on top of v0.3's full Ads CRUD and Instagram Business publishing. **47 tools** across four surfaces — Ads, Pages, Instagram, Catalogs.
 
 ---
 
@@ -25,7 +25,7 @@ Existing options for connecting Meta Ads to Claude are either:
 `claude-meta-mcp` is a small, self-hostable Node service that:
 
 - Speaks **MCP Streamable HTTP**, so it works with claude.ai web and Claude Desktop alike.
-- Reads & writes Meta Ads (campaigns, ad sets, ads, creatives + image/video uploads), publishes & manages Facebook Page posts, and publishes & moderates Instagram Business posts/reels/stories/carousels.
+- Reads & writes Meta Ads (campaigns, ad sets, ads, creatives + image/video uploads), publishes & manages Facebook Page posts, publishes & moderates Instagram Business posts/reels/stories/carousels, and inspects Product Catalogs (feeds, products, diagnostics) for Dynamic Product Ads.
 - Is **MIT licensed** — fork it, sell it, embed it.
 
 ---
@@ -35,7 +35,7 @@ Existing options for connecting Meta Ads to Claude are either:
 ### Prerequisites
 
 - Node.js ≥ 20
-- A Meta Developer App with a **System User token**. For the full v0.3 toolset that's `ads_read`, `ads_management`, `business_management`, `pages_*` and `instagram_*` scopes
+- A Meta Developer App with a **System User token**. For the full v0.4 toolset that's `ads_read`, `ads_management`, `business_management`, `pages_*`, `instagram_*` and `catalog_management` scopes
   → see [`docs/META_APP_SETUP.md`](./docs/META_APP_SETUP.md) for the full step-by-step
 - A public HTTPS URL (Claude requires HTTPS for custom connectors)
 
@@ -69,7 +69,7 @@ The server listens on `PORT` (default `3210`) and exposes:
 
 ## Available tools
 
-~38 tools in v0.3 across three surfaces — Ads (read + write), Facebook Pages (read + write), Instagram Business (read + write).
+47 tools in v0.4 across four surfaces — Ads (read + write), Facebook Pages (read + write), Instagram Business (read + write), Product Catalogs (read).
 
 > **Safety:** every write tool that creates campaigns / ad sets / ads defaults to `status: PAUSED`. To go live you must explicitly pass `status: "ACTIVE"`. This prevents an LLM from accidentally spending money.
 
@@ -134,6 +134,17 @@ The server listens on `PORT` (default `3210`) and exposes:
 | `delete_instagram_comment` ⚠️ | **Destructive** — delete a comment |
 | `hide_instagram_comment` | Hide / unhide a comment |
 
+### Product Catalogs (read)
+
+| Tool | What it does |
+|---|---|
+| `list_businesses` | Discover Business Manager accounts via dedup over `/me/adaccounts` + `/me/accounts` (System User tokens get empty `/me/businesses`) |
+| `list_product_catalogs` | List catalogs owned by a Business (id, name, vertical, product_count, feed_count) |
+| `get_product_catalog` | Single catalog details with business edge |
+| `list_product_feeds` | Feeds attached to a catalog with `latest_upload` error/warning counts |
+| `list_catalog_products` | Paginated product listing with availability/condition filters (max 100/call, pass `after` cursor for next page) |
+| `get_catalog_diagnostics` | Aggregated catalog issues from `/{catalog_id}/diagnostics`; falls back to latest feed-upload error report when empty |
+
 `get_insights` is the workhorse. Examples (in plain English from Claude):
 
 - *"What did we spend in the last 7 days, broken down by campaign?"*
@@ -146,7 +157,7 @@ The server listens on `PORT` (default `3210`) and exposes:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `META_ACCESS_TOKEN` | yes | — | Meta System User token (recommended, never expires) or long-lived user access token. Full v0.3 scopes: `ads_read`, `ads_management`, `business_management`, `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `pages_manage_metadata`, `instagram_basic`, `instagram_content_publish`, `instagram_manage_comments`, `instagram_manage_insights`. Subsets are allowed — missing scopes simply make the matching tools return 403. |
+| `META_ACCESS_TOKEN` | yes | — | Meta System User token (recommended, never expires) or long-lived user access token. Full v0.4 scopes: `ads_read`, `ads_management`, `business_management`, `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `pages_manage_metadata`, `instagram_basic`, `instagram_content_publish`, `instagram_manage_comments`, `instagram_manage_insights`, `catalog_management`. Subsets are allowed — missing scopes simply make the matching tools return 403. |
 | `META_API_VERSION` | no | `v22.0` | Graph API version |
 | `AUTH_TOKEN` | yes | — | Shared bearer secret for `POST /mcp`. Generate with `openssl rand -hex 32` |
 | `PUBLIC_URL` | no | `http://localhost:3210` | Public URL (currently informational; v0.2 will use it for OAuth callbacks) |
@@ -171,7 +182,7 @@ See [`.env.example`](./.env.example).
 
 ---
 
-## Architecture (v0.3)
+## Architecture (v0.4)
 
 ```
 ┌─────────────────────┐     POST /mcp        ┌──────────────────────────┐
@@ -187,7 +198,7 @@ See [`.env.example`](./.env.example).
                                              https://graph.facebook.com
 ```
 
-No database. No state between requests. One Meta System User token, one Bearer token, ~38 tools.
+No database. No state between requests. One Meta System User token, one Bearer token, 47 tools.
 
 For sequence diagrams and the planned v1.0 multi-tenant architecture, see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
@@ -198,23 +209,33 @@ For sequence diagrams and the planned v1.0 multi-tenant architecture, see [`docs
 **v0.2 — Pages support** ✓ shipped
 - [x] `list_pages`, `list_page_posts`, `get_page_insights`, `create_page_post`, `delete_page_post`
 
-**v0.3 — Ads write + Instagram** ✓ shipped (current)
+**v0.3 — Ads write + Instagram** ✓ shipped
 - [x] Ads CRUD (campaigns, ad sets, ads, creatives)
 - [x] Image + video upload
 - [x] Instagram Business publishing (image / video / reel / story / carousel)
 - [x] Instagram comments (read / reply / delete / hide)
 
-**v0.4 — proper auth**
+**v0.4 — Product Catalogs (read)** ✓ shipped (current)
+- [x] Business discovery via adaccount + page dedup
+- [x] Catalog + feed listing, single-catalog detail
+- [x] Product listing with availability/condition filters
+- [x] `get_catalog_diagnostics` (`/{catalog_id}/diagnostics` + feed-upload fallback)
+
+**v0.5 — Catalog writes + Signal Diagnostics**
+- [ ] `create_product_catalog`, `create_product_feed`, `update_product_feed_schedule`
+- [ ] Pixel + CAPI health (`list_pixels`, `get_pixel_stats`, `get_pixel_event_match_quality`, `get_capi_status`)
+
+**v0.6 — proper auth**
 - [ ] OAuth 2.1 with Dynamic Client Registration on the Claude side
 - [ ] `.well-known/oauth-authorization-server` discovery endpoint
 - [ ] Token issuance + refresh
 
-**v0.5 — multi-tenant**
+**v0.7 — multi-tenant**
 - [ ] Meta OAuth user flow + 60-day token refresh
 - [ ] SQLite (then Postgres) for user → meta-token mapping
 - [ ] AES-256-GCM encryption at rest for stored tokens
 
-**v0.6 — performance**
+**v0.8 — performance**
 - [ ] Insights pre-aggregation cache with smart invalidation
 - [ ] Background refresh for "yesterday and earlier" data
 
@@ -239,7 +260,8 @@ src/
 ├── meta-client.ts       Graph API axios wrapper + pagination + multipart helpers
 ├── tools.ts             Read tools (Ads + Pages)
 ├── tools-write.ts       Ads write tools (campaigns/ad sets/ads/creatives + asset uploads)
-└── tools-instagram.ts   Instagram Business tools (publish + comments + insights)
+├── tools-instagram.ts   Instagram Business tools (publish + comments + insights)
+└── tools-catalogs.ts    Product Catalog read tools (businesses, catalogs, feeds, products, diagnostics)
 
 docs/
 ├── ARCHITECTURE.md
@@ -264,7 +286,7 @@ npm start         # node dist/index.js
 
 ## Security notes
 
-- The Bearer token in `AUTH_TOKEN` is a single shared secret. Anyone with it can **mutate ad campaigns, publish/delete posts on your Facebook Pages and Instagram Business accounts** via the connector. Treat it like a database password.
+- The Bearer token in `AUTH_TOKEN` is a single shared secret. Anyone with it can **mutate ad campaigns, publish/delete posts on your Facebook Pages and Instagram Business accounts, and read your product catalogs** via the connector. Treat it like a database password.
 - All write tools that create campaigns/ad sets/ads default to `status: PAUSED`. Activating an ad still costs nothing until you set `status: "ACTIVE"`.
 - The connector's scopes are additive. If you only want a read-only Ads experience, omit `ads_management` and the IG/Pages write scopes from your System User token — the matching tools will then fail with 403 at runtime.
 - Always run behind HTTPS. Claude refuses to connect to non-TLS connectors anyway.
