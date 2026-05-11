@@ -32,18 +32,46 @@ export function registerCatalogTools(server: McpServer, meta: MetaClient): void 
     "list_businesses",
     {
       description:
-        "List all Meta Business Manager accounts the authenticated System User belongs to. Use the returned business IDs as input to list_product_catalogs. Read-only.",
+        "List all Meta Business Manager accounts reachable from the authenticated System User. Discovery walks /me/adaccounts and /me/accounts (Pages) and deduplicates the parent businesses — /me/businesses returns empty for System User tokens. Use the returned business IDs as input to list_product_catalogs. Read-only.",
       inputSchema: {
         limit: z.number().int().min(1).max(100).optional()
-          .describe("Max businesses per page (default 25)"),
+          .describe("Max ad accounts / pages to inspect (default 50)"),
       },
     },
     async ({ limit }) => {
-      const data = await meta.get("/me/businesses", {
-        fields: "id,name,verification_status,primary_page,created_time",
-        limit: limit ?? 25,
+      const pageLimit = limit ?? 50;
+      interface BizRef {
+        id: string;
+        name?: string;
+      }
+      const businesses = new Map<string, BizRef>();
+
+      // Walk Ad Accounts → business
+      const accounts = await meta.get<{
+        data?: { id: string; business?: BizRef }[];
+      }>("/me/adaccounts", {
+        fields: "id,business{id,name}",
+        limit: pageLimit,
       });
-      return asJson(data);
+      for (const a of accounts.data ?? []) {
+        if (a.business?.id) businesses.set(a.business.id, a.business);
+      }
+
+      // Walk Pages → business (Pages also have a parent business)
+      const pages = await meta.get<{
+        data?: { id: string; business?: BizRef }[];
+      }>("/me/accounts", {
+        fields: "id,business{id,name}",
+        limit: pageLimit,
+      });
+      for (const p of pages.data ?? []) {
+        if (p.business?.id) businesses.set(p.business.id, p.business);
+      }
+
+      return asJson({
+        data: Array.from(businesses.values()),
+        source: "deduplicated_from_adaccounts_and_pages",
+      });
     }
   );
 
