@@ -22,7 +22,7 @@ import { registerWriteTools } from "./tools-write.js";
 import { registerInstagramTools } from "./tools-instagram.js";
 import { registerCatalogTools } from "./tools-catalogs.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 function log(
   level: "debug" | "info" | "warn" | "error",

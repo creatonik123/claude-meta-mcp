@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-05-11
+
+Added read-only Product Catalog tools (catalog discovery, feeds, products, diagnostics) — Phase 1 of the Catalog Management roadmap.
+
+### Added — Product Catalogs
+- 6 new read-only tools:
+  - `list_businesses` — Business Manager discovery via dedup over `/me/adaccounts` and `/me/accounts` (System User tokens get empty `/me/businesses`)
+  - `list_product_catalogs` — `/{business_id}/owned_product_catalogs`
+  - `get_product_catalog` — single catalog details with business edge
+  - `list_product_feeds` — feeds attached to a catalog with `latest_upload` summary
+  - `list_catalog_products` — paginated product listing with availability/condition filters
+  - `get_catalog_diagnostics` — `/{catalog_id}/diagnostics`; falls back to latest feed-upload error reports when /diagnostics is empty
+
+### Required scopes (additional)
+- `catalog_management` — required for all six Catalog tools
+
+In the Meta Developer App, add the Use Case:
+- "Produkte mit Catalog API verwalten" (Manage products with Catalog API)
+
+Plus the System User needs explicit asset access to each Catalog in Business Manager → Settings → System Users → `claude-mcp` → Add Assets → **Catalogs**.
+
+### Changed
+- `docs/META_APP_SETUP.md`: catalog_management added to required scopes, removed from "deliberately not requested" list.
+
+### Tool count
+- v0.3.0: 41 tools
+- **v0.4.0: 47 tools** (+6 catalog reads)
+
+### Roadmap (v0.5)
+- Phase 1b — Catalog writes: `create_product_catalog`, `create_product_feed`, `update_product_feed_schedule`
+- Phase 2 — Signal Diagnostics (Pixel + CAPI health, read-only)
+
+### Breaking
+- None. All additive.
+
 ## [0.3.0] — 2026-05-06
 
 Added write tools for Meta Ads (campaign/ad set/ad CRUD + asset uploads + creatives) and full Instagram Business account support (publishing, comments, insights).
