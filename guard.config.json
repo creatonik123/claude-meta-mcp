@@ -1,0 +1,30 @@
+{
+  "managedAccountId": "act_1133075730765139",
+  "deniedAccountIds": ["act_2218833115522041"],
+  "currency": "AUD",
+  "actionModes": {
+    "pause": "off",
+    "adjust_adset_budget": "off",
+    "publish_approved_creative": "off"
+  },
+  "killSwitchEnvFlag": "ADPILOT_KILL_ALL",
+  "budgetClamp": {
+    "maxSingleChangePct": 25,
+    "maxAccountChangePerDayPct": 20,
+    "blockLifetimeBudgetWrites": true,
+    "blockCboAdsetBudgetWrites": true,
+    "crossDayMaxMultipleVs30dBaseline": 2.0
+  },
+  "spendCaps": {
+    "dailyAud": 340,
+    "monthlyAud": 9250,
+    "sameDayDecisionFractionOfDailyCap": 0.8,
+    "spendSnapshotMaxAgeMinutes": 60,
+    "monthEndRevisionBufferAud": 300
+  },
+  "targets": {
+    "targetCplAud": 21.5,
+    "provisional": true
+  },
+  "schemaVersion": 1
+}

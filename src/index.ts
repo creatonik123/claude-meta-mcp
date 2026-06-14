@@ -21,6 +21,9 @@ import { registerTools } from "./tools.js";
 import { registerWriteTools } from "./tools-write.js";
 import { registerInstagramTools } from "./tools-instagram.js";
 import { registerCatalogTools } from "./tools-catalogs.js";
+import { installReadOnlyGate } from "./read-only-gate.js";
+import { assertSafeToolRegistration } from "./startup-assert.js";
+import { loadGuardConfig, assertShipInvariants } from "./load-config.js";
 
 const VERSION = "0.4.0";
 
@@ -59,15 +62,43 @@ function bearerAuth(req: Request, res: Response, next: NextFunction): void {
 }
 
 async function main(): Promise<void> {
+  // Load + validate the guard config and enforce the recommend-only ship
+  // state (all action modes 'off', forbidden account on the deny list).
+  // A malformed config or an unsafe mode aborts startup (fail closed).
+  const guardConfig = loadGuardConfig();
+  assertShipInvariants(guardConfig);
+  log("info", "guard config loaded; recommend-only ship invariants OK", {
+    managed_account: guardConfig.managedAccountId,
+    action_modes: guardConfig.actionModes,
+  });
+
   const meta = new MetaClient(config.meta.accessToken, config.meta.apiVersion);
   const mcp = new McpServer({
     name: "claude-meta-mcp",
     version: VERSION,
   });
+  // Install the read-only safety gate BEFORE registering anything: only
+  // READ_ALLOWLIST names actually register; every write tool the register*
+  // functions attempt is refused and logged.
+  const { attempted, registered } = installReadOnlyGate(mcp, (name) =>
+    log("warn", "tool registration refused by AdPilot safety gate (write/unlisted)", { tool: name })
+  );
+
   registerTools(mcp, meta);
   registerWriteTools(mcp, meta);
   registerInstagramTools(mcp, meta);
   registerCatalogTools(mcp, meta);
+
+  // Boot-time backstop: refuse to start if any REGISTERED (callable) tool is a
+  // write that is not a guarded write — independent of the read allow-list, so
+  // it fires even if the gate breaks or a write name is wrongly allow-listed.
+  assertSafeToolRegistration(registered);
+
+  log("info", "AdPilot read-only mode active", {
+    registered_count: registered.length,
+    attempted_count: attempted.length,
+    registered_tools: registered,
+  });
 
   const app = express();
   app.disable("x-powered-by");
