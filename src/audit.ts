@@ -10,7 +10,13 @@ export interface AuditEntry {
   action: string; // the action type attempted
   entityId: string | null;
   ruleTriggered: string | null; // refusal code, or null when allowed
-  result: "approved_for_execution" | "refused";
+  result:
+    | "approved_for_execution"
+    | "refused"
+    // execution outcomes (PRD R7 — every action logged):
+    | "executed_verified"
+    | "executed_needs_reconcile"
+    | "not_executed";
   details: Record<string, unknown>;
 }
 
