@@ -37,6 +37,32 @@ test("backstop FIRES if a write somehow lands in the registered set (gate-failur
   assert.throws(() => assertSafeToolRegistration(["list_campaigns", "create_campaign"]), /refused/);
 });
 
+// ---- gated writes register ONLY when explicitly allowed (execution wiring) ----
+
+test("by default the gate refuses even the GATED write tools", () => {
+  const { mcp, realCalls } = fakeMcp();
+  const { registered } = installReadOnlyGate(mcp);
+  mcp.registerTool("pause_entity");
+  mcp.registerTool("adjust_adset_budget");
+  assert.deepEqual(registered, []);
+  assert.deepEqual(realCalls, []);
+});
+
+test("allowGatedWrites lets exactly the 3 gated tools through — raw writes still refused", () => {
+  const { mcp, realCalls } = fakeMcp();
+  const { registered } = installReadOnlyGate(mcp, undefined, { allowGatedWrites: true });
+  mcp.registerTool("pause_entity");
+  mcp.registerTool("adjust_adset_budget");
+  mcp.registerTool("publish_approved_creative");
+  mcp.registerTool("update_adset"); // raw upstream write -> still dropped
+  mcp.registerTool("delete_campaign"); // still dropped
+  mcp.registerTool("list_campaigns"); // reads unaffected
+  assert.deepEqual(registered, ["pause_entity", "adjust_adset_budget", "publish_approved_creative", "list_campaigns"]);
+  assert.deepEqual(realCalls, registered);
+  // and the boot backstop accepts this exact set
+  assert.doesNotThrow(() => assertSafeToolRegistration(registered));
+});
+
 test("onRefused callback fires once per dropped write tool", () => {
   const { mcp } = fakeMcp();
   const refused: string[] = [];

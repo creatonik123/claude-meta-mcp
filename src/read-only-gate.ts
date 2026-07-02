@@ -5,7 +5,7 @@
  * the independent startup backstop over the registered set. Extracted from
  * index.ts so the wiring is unit-testable. Nothing here touches Meta.
  */
-import { isAllowedReadTool } from "./tool-gate.js";
+import { isAllowedReadTool, GATED_WRITE_TOOLS } from "./tool-gate.js";
 
 // Minimal shape we depend on — the real McpServer satisfies this.
 export interface ToolRegistrar {
@@ -15,15 +15,20 @@ export interface ToolRegistrar {
 
 export function installReadOnlyGate(
   mcp: ToolRegistrar,
-  onRefused?: (name: string) => void
+  onRefused?: (name: string) => void,
+  // allowGatedWrites is passed ONLY by the execution wiring when the master
+  // execution flag is on. Default (and recommend-only ship state): reads only.
+  opts?: { allowGatedWrites?: boolean }
 ): { attempted: string[]; registered: string[] } {
   const attempted: string[] = [];
   const registered: string[] = [];
   const raw = mcp.registerTool.bind(mcp);
+  const allowed = (name: string) =>
+    isAllowedReadTool(name) || (opts?.allowGatedWrites === true && GATED_WRITE_TOOLS.has(name));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mcp.registerTool = (name: string, ...rest: any[]) => {
     attempted.push(name);
-    if (!isAllowedReadTool(name)) {
+    if (!allowed(name)) {
       onRefused?.(name);
       return undefined;
     }
