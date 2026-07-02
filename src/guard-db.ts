@@ -2,21 +2,27 @@
  * DB reads for the guard (GuardDb), over an injected `sql` (real Neon client wired
  * at the edge — not imported here). READS ONLY.
  *
- * Only killSwitchRow is wired today: `kill_switch(id, active)` exists and is the key
- * safety primitive. The other reads are deliberately FAIL-CLOSED (throw) — the guard's
- * failClosed wrapper turns a throw into a refusal, so a write is refused rather than
- * decided on data we can't yet read. They are blocked on, and must be built with:
- *   - approvalByHash: `approval_records` has no `consumed` column — the one-time-use
- *     model needs reconciling with the GuardDb interface (publish path, separate).
- *   - schemaVersion: no numeric schema-version source exists (only text schema_migrations).
- *   - startOfDayBudget / accountStartOfDayTotal / budgetBaseline30d: need the deferred
- *     midnight start-of-day snapshot job + its table.
+ * killSwitchRow + schemaVersion + the three budget reads are backed by real tables
+ * (kill_switch, guard_schema_version, execution_budget_snapshots — see migrations
+ * 0001/0002). A non-finite/malformed value returns null, which the guard treats
+ * fail-safe: null schema/start-of-day/account-total => refuse; null 30d-baseline =>
+ * skip only the creep check (per the guard's documented contract).
+ *
+ * approvalByHash stays FAIL-CLOSED (throws): approval_records has no `consumed`
+ * column yet, so the one-time-use publish model is unbuilt. The guard's failClosed
+ * wrapper turns the throw into a refusal, so a publish is refused, never guessed.
  */
 import type { GuardDb } from "./guard.js";
 import type { Sql } from "./coordinator-db.js";
 
-const BLOCKED = (what: string, why: string) => {
+const BLOCKED = (what: string, why: string): never => {
   throw new Error(`guard-db: ${what} not wired (${why}) — fail-closed`);
+};
+
+// PG NUMERIC / SUM / AVG can arrive as a string; coerce and reject non-finite.
+const num = (v: unknown): number | null => {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
 };
 
 export function createGuardDb(sql: Sql): GuardDb {
@@ -28,19 +34,41 @@ export function createGuardDb(sql: Sql): GuardDb {
       return typeof a === "boolean" ? a : null;
     },
     async schemaVersion() {
-      return BLOCKED("schemaVersion", "no numeric schema-version source yet");
+      const rows = await sql(`SELECT version FROM guard_schema_version WHERE id = 1`, []);
+      if (rows.length === 0) return null;
+      const v = num(rows[0].version);
+      return v != null && Number.isInteger(v) ? v : null;
     },
     async approvalByHash() {
       return BLOCKED("approvalByHash", "approval_records has no consumed column; publish path deferred");
     },
-    async startOfDayBudget() {
-      return BLOCKED("startOfDayBudget", "needs the start-of-day snapshot job");
+    async startOfDayBudget(entityId: string, day: string) {
+      const rows = await sql(
+        `SELECT daily_budget FROM execution_budget_snapshots WHERE entity_id = $1 AND day = $2`,
+        [entityId, day]
+      );
+      if (rows.length === 0) return null;
+      return num(rows[0].daily_budget);
     },
-    async accountStartOfDayTotal() {
-      return BLOCKED("accountStartOfDayTotal", "needs the start-of-day snapshot job");
+    async accountStartOfDayTotal(day: string) {
+      // SUM over an empty set returns one row with NULL -> num(null) -> null (fail-safe).
+      const rows = await sql(
+        `SELECT SUM(daily_budget) AS total FROM execution_budget_snapshots WHERE day = $1`,
+        [day]
+      );
+      if (rows.length === 0) return null;
+      return num(rows[0].total);
     },
-    async budgetBaseline30d() {
-      return BLOCKED("budgetBaseline30d", "needs the start-of-day snapshot job");
+    async budgetBaseline30d(entityId: string, day: string) {
+      // Window anchored to the guard's account-tz day, NOT the DB server's
+      // CURRENT_DATE (UTC on Neon) — keeps every day-scoped read on one clock.
+      const rows = await sql(
+        `SELECT AVG(daily_budget) AS avg FROM execution_budget_snapshots
+         WHERE entity_id = $1 AND day <= $2::date AND day >= ($2::date - INTERVAL '30 days')`,
+        [entityId, day]
+      );
+      if (rows.length === 0) return null;
+      return num(rows[0].avg);
     },
   };
 }

@@ -2,6 +2,7 @@
   "managedAccountId": "act_1133075730765139",
   "deniedAccountIds": ["act_2218833115522041"],
   "currency": "AUD",
+  "accountTimezone": "Australia/Sydney",
   "actionModes": {
     "pause": "off",
     "adjust_adset_budget": "off",

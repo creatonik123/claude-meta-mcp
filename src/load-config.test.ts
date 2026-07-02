@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadGuardConfig, assertShipInvariants } from "./load-config.ts";
+import { loadGuardConfig, parseGuardConfig, assertShipInvariants } from "./load-config.ts";
 
 test("the on-disk guard.config.json parses and validates", () => {
   const c = loadGuardConfig();
@@ -14,6 +14,12 @@ test("the shipped config satisfies the recommend-only ship invariants", () => {
   assert.doesNotThrow(() => assertShipInvariants(c));
   // belt-and-braces: every action mode is exactly 'off'
   for (const m of Object.values(c.actionModes)) assert.equal(m, "off");
+});
+
+test("a non-IANA accountTimezone is refused at config load (boot), not at decision time", () => {
+  const c = loadGuardConfig();
+  assert.throws(() => parseGuardConfig({ ...c, accountTimezone: "Mars/Phobos" }), /IANA/);
+  assert.throws(() => parseGuardConfig({ ...c, accountTimezone: "" }));
 });
 
 test("assertShipInvariants throws if any action mode is not 'off'", () => {

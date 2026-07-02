@@ -29,6 +29,7 @@ export interface GuardConfig {
   managedAccountId: string;
   deniedAccountIds: string[];
   currency?: string;
+  accountTimezone: string; // IANA tz of the ad account (e.g. "Australia/Sydney") — day boundaries follow this, not UTC
   actionModes: Record<ActionType, ActionMode>;
   killSwitchEnvFlag: string;
   budgetClamp: {
@@ -55,10 +56,11 @@ export interface GuardDb {
   approvalByHash(hash: string): Promise<{ consumed: boolean } | null>;
   startOfDayBudget(entityId: string, day: string): Promise<number | null>;
   accountStartOfDayTotal(day: string): Promise<number | null>;
-  // Trailing 30-day budget baseline for the cross-day creep ceiling.
+  // Trailing 30-day budget baseline for the cross-day creep ceiling, anchored
+  // to the given account-tz day (never the DB server's clock, which is UTC).
   // null = no baseline yet (the creep check is skipped; the per-change,
   // account, and spend caps still apply). A thrown error fails closed.
-  budgetBaseline30d(entityId: string): Promise<number | null>;
+  budgetBaseline30d(entityId: string, day: string): Promise<number | null>;
 }
 
 export interface GuardMeta {
@@ -95,8 +97,20 @@ function isFinitePositive(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n > 0;
 }
 
-function dayString(now: Date): string {
-  return now.toISOString().slice(0, 10); // YYYY-MM-DD (account-tz handling: follow-up)
+// Calendar date in the ACCOUNT's timezone (not UTC). Start-of-day baselines and
+// "spent today" must align with how Meta reports the account, or a decision near
+// UTC-midnight reads the wrong day. Throws on an unusable tz (caller fails closed).
+function dayString(now: Date, timeZone: string): string {
+  const s = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now); // en-CA => "YYYY-MM-DD"
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    throw new Error(`could not resolve account-tz date (got '${s}')`);
+  }
+  return s;
 }
 
 // Run an async safety read; ANY throw becomes a fail-closed refusal.
@@ -255,7 +269,13 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
   const { config, db, meta, now } = deps;
   const entityId = String(args.entityId);
   const requested = args.dailyBudget as number;
-  const day = dayString(now());
+  let day: string;
+  try {
+    day = dayString(now(), config.accountTimezone);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return refuse("tz_invalid", `account timezone unusable — refused (fail-closed): ${msg}`);
+  }
   const bc = config.budgetClamp;
 
   // Budget locus: refuse CBO ad-set budget writes (budget lives on the campaign).
@@ -295,7 +315,7 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
 
   // Stop a budget creeping up over many days (e.g. +25% nightly): refuse if it
   // passes a multiple of the 30-day normal. No 30d history yet -> skip.
-  const b30Read = await failClosed(() => db.budgetBaseline30d(entityId), "b30_unreadable", "30-day budget baseline");
+  const b30Read = await failClosed(() => db.budgetBaseline30d(entityId, day), "b30_unreadable", "30-day budget baseline");
   if (!b30Read.ok) return b30Read.decision;
   const b30 = b30Read.value;
   if (isIncrease && isFinitePositive(b30) && clamped >= b30 * bc.crossDayMaxMultipleVs30dBaseline) {

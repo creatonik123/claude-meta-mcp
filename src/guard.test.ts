@@ -13,6 +13,7 @@ const baseConfig: GuardConfig = {
   managedAccountId: "act_1133075730765139",
   deniedAccountIds: ["act_2218833115522041"],
   actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
+  accountTimezone: "Australia/Sydney",
   killSwitchEnvFlag: "ADPILOT_KILL_ALL",
   budgetClamp: {
     maxSingleChangePct: 25,
@@ -354,4 +355,32 @@ test("realisedSpend throws on an increase -> refuse (fail-closed)", async () => 
 test("budget INCREASE with high today-spend -> daily_spend_cap", async () => {
   const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({ meta: { realisedSpend: async () => ({ today: 300, monthToDate: 2000, dateStop: "2026-06-14", complete: true }) } }));
   expectRefuse(d, "daily_spend_cap");
+});
+
+// ---- account timezone: day boundaries follow the account tz, not UTC ----
+test("budget baseline + spend use the ACCOUNT-tz day, not UTC", async () => {
+  // 2026-06-14T16:00Z = 2026-06-15 02:00 in Australia/Sydney -> account day is the 15th
+  let seenSodDay: string | null = null;
+  let seenAcctDay: string | null = null;
+  let seenB30Day: string | null = null;
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
+    now: () => new Date("2026-06-14T16:00:00Z"),
+    db: {
+      startOfDayBudget: async (_e: string, day: string) => { seenSodDay = day; return 100; },
+      accountStartOfDayTotal: async (day: string) => { seenAcctDay = day; return 1000; },
+      budgetBaseline30d: async (_e: string, day: string) => { seenB30Day = day; return 1000; },
+    },
+    meta: {
+      realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-15", complete: true }),
+    },
+  }));
+  expectAllow(d);
+  assert.equal(seenSodDay, "2026-06-15");
+  assert.equal(seenAcctDay, "2026-06-15");
+  assert.equal(seenB30Day, "2026-06-15");
+});
+
+test("invalid account timezone fails closed (budget)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({ config: { accountTimezone: "Mars/Phobos" } }));
+  expectRefuse(d, "tz_invalid");
 });

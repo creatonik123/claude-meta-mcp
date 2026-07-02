@@ -7,6 +7,7 @@ import type { AuditEntry, AuditSink } from "./audit.ts";
 const baseConfig: GuardConfig = {
   managedAccountId: "act_1133075730765139",
   deniedAccountIds: ["act_2218833115522041"],
+  accountTimezone: "Australia/Sydney",
   actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
   killSwitchEnvFlag: "ADPILOT_KILL_ALL",
   budgetClamp: {
