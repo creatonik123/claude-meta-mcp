@@ -48,6 +48,7 @@ function makeDeps(modeOff = false): GuardDeps {
       entityAccountId: async () => "act_1133075730765139",
       currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false }),
       realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
+      accountActiveDailyBudgetTotal: async () => 1000,
     },
   };
 }

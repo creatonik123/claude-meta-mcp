@@ -80,3 +80,56 @@ test("currentBudget returns null when no budget is readable anywhere (unknown ->
   const m = createGuardMeta(fakeClient({ "/23890": { campaign: {} } }), ACCT, 100);
   assert.equal(await m.currentBudget("23890"), null);
 });
+
+// ---- accountActiveDailyBudgetTotal: the live base of the cumulative account cap ----
+
+test("accountActiveDailyBudgetTotal sums ONLY ACTIVE ad sets that own a daily budget, in major units", async () => {
+  const m = createGuardMeta(
+    fakeClient({
+      [`/${ACCT}/adsets`]: {
+        data: [
+          { daily_budget: "10000", effective_status: "ACTIVE" }, // 100
+          { daily_budget: "5000", effective_status: "ACTIVE" }, // 50
+          { daily_budget: "99900", effective_status: "PAUSED" }, // idle -> excluded
+          { effective_status: "ACTIVE" }, // CBO / no own budget -> excluded
+          { daily_budget: "7700", effective_status: "CAMPAIGN_PAUSED" }, // excluded
+        ],
+      },
+    }),
+    ACCT,
+    100
+  );
+  assert.equal(await m.accountActiveDailyBudgetTotal(), 150);
+});
+
+test("accountActiveDailyBudgetTotal follows pagination and sums across pages", async () => {
+  // fakeClient keys by path only, so emulate paging via a stateful client
+  const pages = [
+    { data: [{ daily_budget: "10000", effective_status: "ACTIVE" }], paging: { next: "n", cursors: { after: "c1" } } },
+    { data: [{ daily_budget: "20000", effective_status: "ACTIVE" }] },
+  ];
+  let call = 0;
+  const client = {
+    async get() { return pages[call++] as never; },
+    async post() { throw new Error("guard-meta must never POST"); },
+  };
+  const m = createGuardMeta(client, ACCT, 100);
+  assert.equal(await m.accountActiveDailyBudgetTotal(), 300);
+  assert.equal(call, 2);
+});
+
+test("accountActiveDailyBudgetTotal returns null on a malformed page or malformed budget (never a partial sum)", async () => {
+  const noData = createGuardMeta(fakeClient({ [`/${ACCT}/adsets`]: {} }), ACCT, 100);
+  assert.equal(await noData.accountActiveDailyBudgetTotal(), null);
+  const badBudget = createGuardMeta(
+    fakeClient({ [`/${ACCT}/adsets`]: { data: [{ daily_budget: "abc", effective_status: "ACTIVE" }] } }),
+    ACCT,
+    100
+  );
+  assert.equal(await badBudget.accountActiveDailyBudgetTotal(), null);
+});
+
+test("accountActiveDailyBudgetTotal returns 0 when no ACTIVE ad set owns a budget (guard refuses on non-positive)", async () => {
+  const m = createGuardMeta(fakeClient({ [`/${ACCT}/adsets`]: { data: [{ daily_budget: "5000", effective_status: "PAUSED" }] } }), ACCT, 100);
+  assert.equal(await m.accountActiveDailyBudgetTotal(), 0);
+});

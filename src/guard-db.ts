@@ -60,11 +60,15 @@ export function createGuardDb(sql: Sql): GuardDb {
       return num(rows[0].total);
     },
     async budgetBaseline30d(entityId: string, day: string) {
-      // Window anchored to the guard's account-tz day, NOT the DB server's
-      // CURRENT_DATE (UTC on Neon) — keeps every day-scoped read on one clock.
+      // Trailing 30 days STRICTLY BEFORE the anchor day, anchored to the
+      // guard's account-tz day (never the DB server's CURRENT_DATE, which is
+      // UTC on Neon). Excluding the anchor day matters: today's own snapshot
+      // is exactly the value being clamped, and folding it into the baseline
+      // would raise the 2x creep ceiling on the very trajectory it exists to
+      // stop.
       const rows = await sql(
         `SELECT AVG(daily_budget) AS avg FROM execution_budget_snapshots
-         WHERE entity_id = $1 AND day <= $2::date AND day >= ($2::date - INTERVAL '30 days')`,
+         WHERE entity_id = $1 AND day < $2::date AND day >= ($2::date - INTERVAL '30 days')`,
         [entityId, day]
       );
       if (rows.length === 0) return null;

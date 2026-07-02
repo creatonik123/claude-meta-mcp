@@ -56,10 +56,12 @@ export interface GuardDb {
   approvalByHash(hash: string): Promise<{ consumed: boolean } | null>;
   startOfDayBudget(entityId: string, day: string): Promise<number | null>;
   accountStartOfDayTotal(day: string): Promise<number | null>;
-  // Trailing 30-day budget baseline for the cross-day creep ceiling, anchored
-  // to the given account-tz day (never the DB server's clock, which is UTC).
-  // null = no baseline yet (the creep check is skipped; the per-change,
-  // account, and spend caps still apply). A thrown error fails closed.
+  // Trailing 30-day budget baseline for the cross-day creep ceiling: the 30
+  // account-tz days strictly BEFORE the given day (the anchor day's own
+  // snapshot is excluded — it is the value under judgment). Never the DB
+  // server's clock, which is UTC. null = no history yet (the creep check is
+  // skipped; the per-change, account, and spend caps still apply). A thrown
+  // error fails closed.
   budgetBaseline30d(entityId: string, day: string): Promise<number | null>;
 }
 
@@ -67,6 +69,11 @@ export interface GuardMeta {
   entityAccountId(entityId: string): Promise<string | null>;
   currentBudget(entityId: string): Promise<CurrentBudget | null>;
   realisedSpend(): Promise<SpendSnapshot | null>;
+  // LIVE sum of the account's ACTIVE ad sets' own daily budgets (major units).
+  // The account cap compares the projected live total against the frozen
+  // start-of-day ceiling, so same-day increases already applied — by the agent
+  // or a human — consume the day's headroom. null/unreadable = refuse.
+  accountActiveDailyBudgetTotal(): Promise<number | null>;
 }
 
 export interface GuardDeps {
@@ -325,19 +332,38 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
     );
   }
 
-  // Account aggregate clamp (+/- maxAccountChangePerDayPct/day vs SoD total).
-  const acctRead = await failClosed(() => db.accountStartOfDayTotal(day), "acct_sod_unreadable", "account SoD total");
-  if (!acctRead.ok) return acctRead.decision;
-  const acctSoD = acctRead.value;
-  if (!isFinitePositive(acctSoD)) {
-    return refuse("acct_baseline_missing", "no valid account start-of-day total — refused (fail-closed)");
-  }
-  const projectedAcctTotal = acctSoD + (clamped - baseline);
-  if (projectedAcctTotal >= acctSoD * (1 + bc.maxAccountChangePerDayPct / 100)) {
-    return refuse(
-      "account_cap",
-      `change would push account budget to ${projectedAcctTotal.toFixed(2)}, over +${bc.maxAccountChangePerDayPct}% of start-of-day total`
-    );
+  // Account aggregate cap (increases only — a decrease must never be blocked
+  // by account totals): the projected LIVE account total may not reach
+  // +maxAccountChangePerDayPct over the frozen SoD total. Using the live total
+  // (current entity budget swapped for the clamped value) makes the cap
+  // CUMULATIVE: increases already applied earlier today — by the agent on
+  // other ad sets, or by a human — consume the same day headroom. A
+  // per-decision delta against the frozen total alone would let N distinct
+  // ad-set raises compound to the per-entity bound instead.
+  if (isIncrease) {
+    const acctRead = await failClosed(() => db.accountStartOfDayTotal(day), "acct_sod_unreadable", "account SoD total");
+    if (!acctRead.ok) return acctRead.decision;
+    const acctSoD = acctRead.value;
+    if (!isFinitePositive(acctSoD)) {
+      return refuse("acct_baseline_missing", "no valid account start-of-day total — refused (fail-closed)");
+    }
+    const liveRead = await failClosed(() => meta.accountActiveDailyBudgetTotal(), "acct_live_unreadable", "live account budget total");
+    if (!liveRead.ok) return liveRead.decision;
+    const liveTotal = liveRead.value;
+    if (!isFinitePositive(liveTotal)) {
+      return refuse("acct_live_missing", "could not read the live account budget total — refused (fail-closed)");
+    }
+    const entityCurrent = cb.value.dailyBudget;
+    if (!isFinitePositive(entityCurrent)) {
+      return refuse("budget_unknown", "entity's current daily budget unreadable — refused (fail-closed)");
+    }
+    const projectedAcctTotal = liveTotal - entityCurrent + clamped;
+    if (projectedAcctTotal >= acctSoD * (1 + bc.maxAccountChangePerDayPct / 100)) {
+      return refuse(
+        "account_cap",
+        `change would push the live account budget to ${projectedAcctTotal.toFixed(2)}, over +${bc.maxAccountChangePerDayPct}% of the start-of-day total (${acctSoD})`
+      );
+    }
   }
 
   // Spend cap (only matters when increasing): enforce on REAL realised spend.

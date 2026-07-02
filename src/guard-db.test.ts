@@ -57,7 +57,20 @@ test("budgetBaseline30d returns the average anchored to the given day; null when
   // window is anchored to the passed account-tz day, never the DB server's clock
   assert.deepEqual(sql.calls[0].params, ["as_1", "2026-06-28"]);
   assert.doesNotMatch(sql.calls[0].text, /CURRENT_DATE/i);
+  // pin the window shape: trailing 30 days, STRICTLY before the anchor day
+  // (the anchor day's own snapshot is the value under judgment — including it
+  // would self-referentially raise the creep ceiling)
+  assert.match(sql.calls[0].text, /day < \$2::date/);
+  assert.match(sql.calls[0].text, /INTERVAL '30 days'/);
   assert.equal(await createGuardDb(fakeSql(() => [{ avg: null }])).budgetBaseline30d("as_1", "2026-06-28"), null);
+});
+
+test("accountStartOfDayTotal sums exactly the given day (query shape pinned)", async () => {
+  const sql = fakeSql(() => [{ total: "1500" }]);
+  assert.equal(await createGuardDb(sql).accountStartOfDayTotal("2026-06-28"), 1500);
+  assert.match(sql.calls[0].text, /WHERE day = \$1/);
+  assert.deepEqual(sql.calls[0].params, ["2026-06-28"]);
+  assert.doesNotMatch(sql.calls[0].text, /CURRENT_DATE/i);
 });
 
 test("malformed values from the DB coerce to null (guard then refuses fail-safe)", async () => {

@@ -38,6 +38,36 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
       return { dailyBudget, lifetimeBudget, ownedByCampaignCbo };
     },
 
+    // Live sum of ACTIVE ad sets' OWN daily budgets, mirroring the snapshot
+    // job's criteria so the account cap compares like with like. Fail-closed:
+    // a malformed page, malformed budget, or runaway pagination returns null
+    // (the guard refuses); it never returns a partial sum.
+    async accountActiveDailyBudgetTotal(): Promise<number | null> {
+      let after: string | undefined;
+      let total = 0;
+      for (let page = 0; page < 50; page++) {
+        const r = await client.get<{
+          data?: Array<Record<string, unknown>>;
+          paging?: { next?: string; cursors?: { after?: string } };
+        }>(`/${accountId}/adsets`, {
+          fields: "daily_budget,effective_status",
+          limit: 200,
+          ...(after ? { after } : {}),
+        });
+        if (!Array.isArray(r?.data)) return null; // malformed page = unknown
+        for (const row of r.data) {
+          if (row?.effective_status !== "ACTIVE") continue;
+          if (row?.daily_budget == null || row.daily_budget === "") continue; // CBO / no own budget
+          const major = toMajor(row.daily_budget);
+          if (major === null || major < 0) return null; // malformed budget = unknown
+          total += major;
+        }
+        if (!r.paging?.next || !r.paging?.cursors?.after) return total;
+        after = r.paging.cursors.after;
+      }
+      return null; // pagination did not terminate — treat as unknown
+    },
+
     async realisedSpend(): Promise<SpendSnapshot | null> {
       const insights = (preset: string) =>
         client.get<{ data?: Array<Record<string, unknown>> }>(`/${accountId}/insights`, { fields: "spend", date_preset: preset });

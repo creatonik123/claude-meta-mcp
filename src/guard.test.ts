@@ -61,6 +61,7 @@ function makeDeps(o: DeepOverrides = {}): GuardDeps {
       entityAccountId: async () => "act_1133075730765139",
       currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false }),
       realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
+      accountActiveDailyBudgetTotal: async () => 1000, // matches accountStartOfDayTotal: no headroom consumed yet
       ...(o.meta ?? {}),
     },
   };
@@ -185,8 +186,44 @@ test("missing start-of-day baseline -> refuse (fail-closed)", async () => {
 // ---- account aggregate clamp ----
 test("account aggregate >+20%/day -> refuse", async () => {
   // one big ad set IS the whole account: baseline 1000, account SoD 1000, request 1300 -> clamp 1250 -> +25% of account -> over +20%
-  const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 1300 }, makeDeps({ db: { startOfDayBudget: async () => 1000, accountStartOfDayTotal: async () => 1000 } }));
+  const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 1300 }, makeDeps({
+    db: { startOfDayBudget: async () => 1000, accountStartOfDayTotal: async () => 1000 },
+    meta: { currentBudget: async () => ({ dailyBudget: 1000, lifetimeBudget: null, ownedByCampaignCbo: false }) },
+  }));
   expectRefuse(d, "account_cap");
+});
+
+// ---- account cap is CUMULATIVE via the live total ----
+test("increase refused when earlier same-day increases already consumed the account headroom", async () => {
+  // SoD total 1000 (+20% ceiling 1200). Other ad sets were already raised today:
+  // live total 1195. This entity: baseline+current 100, requesting 110 (well within
+  // its own +25%) -> projected live total 1205 >= 1200 -> refuse.
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
+    meta: { accountActiveDailyBudgetTotal: async () => 1195 },
+  }));
+  expectRefuse(d, "account_cap");
+});
+
+test("live account total unreadable (throws) -> refuse (fail-closed)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
+    meta: { accountActiveDailyBudgetTotal: async () => { throw new Error("meta down"); } },
+  }));
+  expectRefuse(d, "acct_live_unreadable");
+});
+
+test("live account total null -> refuse (fail-closed)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
+    meta: { accountActiveDailyBudgetTotal: async () => null },
+  }));
+  expectRefuse(d, "acct_live_missing");
+});
+
+test("a DECREASE is never blocked by the account cap, even with a huge live total", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(90), makeDeps({
+    meta: { accountActiveDailyBudgetTotal: async () => 999999 },
+  }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 90);
 });
 
 // ---- spend caps (on a real increase) ----
@@ -317,8 +354,11 @@ test("publish with a smuggled extra field -> refuse args_extra", async () => {
 
 // ---- account-aggregate boundary is inclusive (refuse at exactly +20%) ----
 test("account aggregate exactly at +20% -> refuse (inclusive boundary)", async () => {
-  // baseline 1000, account SoD 1000, request 1200 -> clamp to 1250 cap but +20% is the account limit; projected 1000+(min(1200,1250)-1000)=1200 == +20% -> refuse
-  const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 1200 }, makeDeps({ db: { startOfDayBudget: async () => 1000, accountStartOfDayTotal: async () => 1000, budgetBaseline30d: async () => 100000 } }));
+  // baseline 1000, account SoD 1000, request 1200 -> clamp to 1250 cap but +20% is the account limit; projected 1000-1000+min(1200,1250)=1200 == +20% -> refuse
+  const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 1200 }, makeDeps({
+    db: { startOfDayBudget: async () => 1000, accountStartOfDayTotal: async () => 1000, budgetBaseline30d: async () => 100000 },
+    meta: { currentBudget: async () => ({ dailyBudget: 1000, lifetimeBudget: null, ownedByCampaignCbo: false }) },
+  }));
   expectRefuse(d, "account_cap");
 });
 

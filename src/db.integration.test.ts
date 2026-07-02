@@ -49,7 +49,10 @@ test("DB integration (test branch): migrations apply + guard-db reads", { skip }
     assert.equal(await db.startOfDayBudget(eid, day), 100);
     const total = await db.accountStartOfDayTotal(day);
     assert.ok(total !== null && total >= 100, `account SoD total should include the snapshot (got ${total})`);
-    assert.equal(await db.budgetBaseline30d(eid, day), 100); // day-anchored 30d window sees the row
+    // trailing-30d creep baseline EXCLUDES the anchor day's own snapshot...
+    assert.equal(await db.budgetBaseline30d(eid, day), null);
+    // ...and sees it from the next day's anchor
+    assert.equal(await db.budgetBaseline30d(eid, "2020-01-02"), 100);
     await sql(`DELETE FROM execution_budget_snapshots WHERE entity_id = $1`, [eid]);
     assert.equal(await db.startOfDayBudget(eid, day), null); // cleaned up
   });
