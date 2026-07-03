@@ -146,3 +146,45 @@ test("accountActiveDailyBudgetTotal fails closed (null) when next exists but the
     assert.equal(await createGuardMeta(client, ACCT, 100).accountActiveDailyBudgetTotal(), null);
   }
 });
+
+test("accountActiveDailyBudgetTotal counts transitional/unrecognized statuses (overcount = tighter cap)", async () => {
+  const m = createGuardMeta(
+    fakeClient({
+      [`/${ACCT}/adsets`]: {
+        data: [
+          { daily_budget: "10000", effective_status: "ACTIVE" }, // 100
+          { daily_budget: "5000", effective_status: "IN_PROCESS" }, // transitional -> counted
+          { daily_budget: "2000", effective_status: "SOME_FUTURE_STATUS" }, // unknown string -> counted
+          { daily_budget: "99900", effective_status: "PAUSED" }, // definitively idle -> excluded
+        ],
+      },
+    }),
+    ACCT,
+    100
+  );
+  assert.equal(await m.accountActiveDailyBudgetTotal(), 170);
+});
+
+test("accountActiveDailyBudgetTotal fails closed (null) when a row's status is missing", async () => {
+  const m = createGuardMeta(
+    fakeClient({ [`/${ACCT}/adsets`]: { data: [{ daily_budget: "10000" }] } }),
+    ACCT,
+    100
+  );
+  assert.equal(await m.accountActiveDailyBudgetTotal(), null);
+});
+
+test("currentBudget surfaces effective_status; missing -> null (guard refuses budget writes)", async () => {
+  const withStatus = createGuardMeta(
+    fakeClient({ "/23890": { daily_budget: "5000", lifetime_budget: "0", effective_status: "ACTIVE", campaign: {} } }),
+    ACCT,
+    100
+  );
+  assert.equal((await withStatus.currentBudget("23890"))?.effectiveStatus, "ACTIVE");
+  const noStatus = createGuardMeta(
+    fakeClient({ "/23890": { daily_budget: "5000", lifetime_budget: "0", campaign: {} } }),
+    ACCT,
+    100
+  );
+  assert.equal((await noStatus.currentBudget("23890"))?.effectiveStatus, null);
+});

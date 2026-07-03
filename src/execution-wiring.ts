@@ -53,7 +53,19 @@ export interface ExecutionDeps {
   doerDeps: DoerDeps;
   audit: AuditSink;
   holder: string;
+  // Per-call account-wide budget lock (see ACCOUNT_BUDGET_LOCK). Each call gets
+  // its OWN holder so releasing after a lease-expiry takeover cannot delete a
+  // successor's lock, and its own lease sized to the guard's worst-case span.
+  accountLock: () => { acquire: () => Promise<boolean>; release: () => Promise<void> };
 }
+
+// The account budget lock is held across the guard's Meta reads (entity owner,
+// current budget, up to 10 live-total pages, realised spend — each bounded by
+// the client's 30s timeout) plus the doer's ~60s write+read-back, so its lease
+// must outlast that whole span: ~460s worst case, 900s = ~2x margin. The
+// coordinator's default 120s lease is calibrated for the doer-only section and
+// MUST NOT be used for this lock.
+export const ACCOUNT_LOCK_TTL_SECONDS = 900;
 
 // The MCP server is long-lived, but the doer's dedupe was designed per RUN: a
 // later run must be able to re-apply the same value (re-pause a reactivated ad,
@@ -61,8 +73,13 @@ export interface ExecutionDeps {
 // for weeks would keep skipping those as "already applied". Scoping the dedupe
 // key to the account-tz day restores the intent: same-day double-writes dedupe,
 // any later day may re-apply. Locks keep the boot-stable holder (safe release).
-export function withDayScopedDedupe(inner: ExecutionCoordinator, day: () => string): ExecutionCoordinator {
+export function withDayScopedDedupe(
+  inner: ExecutionCoordinator,
+  day: () => string
+): ExecutionCoordinator & { dayScoped: true } {
   return {
+    // marker so composition tests can assert the wrapper is actually applied
+    dayScoped: true,
     acquire: (lockKey) => inner.acquire(lockKey),
     release: (lockKey) => inner.release(lockKey),
     // async so a day() throw becomes a rejection: the doer treats it as a
@@ -98,7 +115,18 @@ export function buildExecutionDeps(
   const currencyOffset = currencyOffsetFor(guardConfig.currency);
   const sql = createNeonSql(env.DATABASE_URL);
   const holder = `mcp-${randomUUID()}`; // per-boot-unique: owns locks; dedupe is day-scoped below
+  let lockSeq = 0;
+  const accountLock = () => {
+    // fresh holder per call: after a lease-expiry takeover, this call's release
+    // matches only its own row and cannot delete the takeover's lock
+    const c = createDbCoordinator(sql, `${holder}:albk:${++lockSeq}`, ACCOUNT_LOCK_TTL_SECONDS);
+    return {
+      acquire: () => c.acquire(ACCOUNT_BUDGET_LOCK),
+      release: () => c.release(ACCOUNT_BUDGET_LOCK),
+    };
+  };
   return {
+    accountLock,
     guardDeps: {
       config: guardConfig,
       now: () => new Date(),
@@ -165,7 +193,7 @@ export const ACCOUNT_BUDGET_LOCK = "account_budget";
 
 export function registerGatedWriteTools(
   mcp: ToolRegistrar,
-  deps: Pick<ExecutionDeps, "guardDeps" | "doerDeps" | "audit">
+  deps: Pick<ExecutionDeps, "guardDeps" | "doerDeps" | "audit" | "accountLock">
 ): string[] {
   const registered: string[] = [];
 
@@ -184,12 +212,13 @@ export function registerGatedWriteTools(
     return { content: [{ type: "text", text: JSON.stringify(payload) }] };
   };
 
-  const refuseLocked = async (action: ActionType, guardArgs: Record<string, unknown>) => {
-    const decision = {
-      allowed: false as const,
-      code: "account_budget_locked",
-      reason: "another budget change is being decided or applied — serialized for the account cap, retry shortly",
-    };
+  const refuseLocked = async (
+    action: ActionType,
+    guardArgs: Record<string, unknown>,
+    code: string,
+    reason: string
+  ) => {
+    const decision = { allowed: false as const, code, reason };
     let ts: string;
     try {
       ts = deps.guardDeps.now().toISOString();
@@ -222,18 +251,29 @@ export function registerGatedWriteTools(
         if (action !== "adjust_adset_budget") {
           return decideAndExecute(action, guardArgs);
         }
-        let locked = false;
+        const lock = deps.accountLock();
+        // Two distinct refusals, both fail-closed: a store outage must not be
+        // audited as contention (they need different operator responses).
+        let locked: boolean;
         try {
-          locked = await deps.doerDeps.coordinator.acquire(ACCOUNT_BUDGET_LOCK);
-        } catch {
-          locked = false; // lock store unreachable = fail-closed refusal below
+          locked = await lock.acquire();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return refuseLocked(action, guardArgs, "account_lock_unavailable", `could not reach the budget lock store — refused (fail-closed): ${msg}`);
         }
-        if (!locked) return refuseLocked(action, guardArgs);
+        if (!locked) {
+          return refuseLocked(
+            action,
+            guardArgs,
+            "account_budget_locked",
+            "another budget change is being decided or applied — serialized for the account cap, retry shortly"
+          );
+        }
         try {
           return await decideAndExecute(action, guardArgs);
         } finally {
           try {
-            await deps.doerDeps.coordinator.release(ACCOUNT_BUDGET_LOCK);
+            await lock.release();
           } catch {
             // lease expiry reclaims an unreleased lock
           }

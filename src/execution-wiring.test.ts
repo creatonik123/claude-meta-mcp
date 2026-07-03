@@ -7,7 +7,6 @@ import {
   registerGatedWriteTools,
   wireExecution,
   withDayScopedDedupe,
-  ACCOUNT_BUDGET_LOCK,
 } from "./execution-wiring.ts";
 import { GATED_WRITE_TOOLS } from "./tool-gate.ts";
 import { loadGuardConfig } from "./load-config.ts";
@@ -60,7 +59,7 @@ function fakeGuardDeps(config: GuardConfig, audits: AuditEntry[]): { guardDeps: 
       },
       meta: {
         entityAccountId: async () => "act_1133075730765139",
-        currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false }),
+        currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
         realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
         accountActiveDailyBudgetTotal: async () => 1000,
       },
@@ -100,6 +99,19 @@ function fakeDoerDeps(
     },
     currencyOffset: 100,
   };
+}
+
+// account-lock fake that always grants, logging into the given trace
+function passLock(log: string[] = []) {
+  return () => ({
+    acquire: async () => {
+      log.push("acquire:albk");
+      return true;
+    },
+    release: async () => {
+      log.push("release:albk");
+    },
+  });
 }
 
 // ---- tool-name -> action map stays in sync with the gate ----
@@ -233,7 +245,7 @@ test("with shipped config, a pause call is REFUSED (action_mode_off) and audited
   const audits: AuditEntry[] = [];
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
   const { guardDeps, audit } = fakeGuardDeps(offConfig(), audits);
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
 
   const res = (await mcp.tools.pause_entity.cb({ entityId: "as_1" })) as { content: Array<{ text: string }> };
   const payload = JSON.parse(res.content[0].text);
@@ -252,7 +264,7 @@ test("with modes auto, pause executes through the doer and read-back verifies", 
   const audits: AuditEntry[] = [];
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
   const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
 
   const res = (await mcp.tools.pause_entity.cb({ entityId: "as_1" })) as { content: Array<{ text: string }> };
   const payload = JSON.parse(res.content[0].text);
@@ -269,7 +281,7 @@ test("budget call converts to minor units at the write and is clamped by the gua
   const audits: AuditEntry[] = [];
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
   const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
 
   // baseline 100, request 140 -> guard clamps to 125 -> doer writes 12500 minor units
   const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 140 })) as { content: Array<{ text: string }> };
@@ -285,7 +297,7 @@ test("extra fields from the model CANNOT smuggle past the schema (guard args are
   const audits: AuditEntry[] = [];
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
   const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
 
   // status:ACTIVE and account_id must be ignored — the handler builds the guard
   // args from named fields only, so the guard sees exactly {entityId, status:PAUSED}
@@ -301,14 +313,14 @@ test("a budget call holds the account lock across decide+execute and releases it
   const mcp = fakeMcp();
   const audits: AuditEntry[] = [];
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
-  const lockLog: string[] = [];
+  const log: string[] = []; // shared log: account lock + the doer's entity lock
   const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes, lockLog), audit });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes, log), audit, accountLock: passLock(log) });
 
   await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110 });
-  assert.equal(lockLog[0], `acquire:${ACCOUNT_BUDGET_LOCK}`); // account lock FIRST
-  assert.equal(lockLog[lockLog.length - 1], `release:${ACCOUNT_BUDGET_LOCK}`); // released LAST
-  assert.ok(lockLog.includes("acquire:as_1")); // the doer's per-entity lock nests inside
+  assert.equal(log[0], "acquire:albk"); // account lock FIRST
+  assert.equal(log[log.length - 1], "release:albk"); // released LAST
+  assert.ok(log.includes("acquire:as_1")); // the doer's per-entity lock nests inside
 });
 
 test("a contended account lock refuses the budget call (audited), never writes", async () => {
@@ -316,9 +328,8 @@ test("a contended account lock refuses the budget call (audited), never writes",
   const audits: AuditEntry[] = [];
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
   const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
-  const doerDeps = fakeDoerDeps(writes);
-  doerDeps.coordinator.acquire = async (k) => k !== ACCOUNT_BUDGET_LOCK; // account lock held elsewhere
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps, audit });
+  const heldElsewhere = () => ({ acquire: async () => false, release: async () => {} });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: heldElsewhere });
 
   const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110 })) as { content: Array<{ text: string }> };
   const payload = JSON.parse(res.content[0].text);
@@ -330,20 +341,56 @@ test("a contended account lock refuses the budget call (audited), never writes",
   assert.equal(audits[0].ruleTriggered, "account_budget_locked");
 });
 
+test("a THROWING lock store refuses with its own code (never audited as contention, never writes)", async () => {
+  const mcp = fakeMcp();
+  const audits: AuditEntry[] = [];
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
+  const broken = () => ({
+    acquire: async (): Promise<boolean> => {
+      throw new Error("lock store down");
+    },
+    release: async () => {},
+  });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: broken });
+
+  const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110 })) as { content: Array<{ text: string }> };
+  const payload = JSON.parse(res.content[0].text);
+  assert.equal(payload.decision.allowed, false);
+  assert.equal(payload.decision.code, "account_lock_unavailable");
+  assert.equal(writes.length, 0);
+  assert.equal(audits[0].ruleTriggered, "account_lock_unavailable");
+});
+
 test("pause does NOT take the account budget lock", async () => {
   const mcp = fakeMcp();
-  const lockLog: string[] = [];
+  const albkLog: string[] = [];
   const { guardDeps, audit } = fakeGuardDeps(autoConfig(), []);
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps([], lockLog), audit });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps([]), audit, accountLock: passLock(albkLog) });
   await mcp.tools.pause_entity.cb({ entityId: "as_1" });
-  assert.ok(!lockLog.some((l) => l.includes(ACCOUNT_BUDGET_LOCK)));
+  assert.deepEqual(albkLog, []);
+});
+
+// ---- production composition pins (mutation guards) ----
+
+test("buildExecutionDeps applies the day-scoped dedupe wrapper and a per-call account lock", () => {
+  const env = { DATABASE_URL: "postgres://u:p@h/db" };
+  const built = buildExecutionDeps(env, fakeClient, offConfig());
+  // the wrapper's marker proves the composition, not just the unit
+  assert.equal((built.doerDeps.coordinator as { dayScoped?: boolean }).dayScoped, true);
+  // accountLock is a factory producing a fresh lock handle per call
+  const l1 = built.accountLock();
+  const l2 = built.accountLock();
+  assert.equal(typeof l1.acquire, "function");
+  assert.equal(typeof l1.release, "function");
+  assert.notEqual(l1, l2);
 });
 
 test("a malformed entityId is refused by the guard, not thrown", async () => {
   const mcp = fakeMcp();
   const audits: AuditEntry[] = [];
   const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps([]), audit });
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps([]), audit, accountLock: passLock() });
 
   const res = (await mcp.tools.pause_entity.cb({})) as { content: Array<{ text: string }> };
   const payload = JSON.parse(res.content[0].text);

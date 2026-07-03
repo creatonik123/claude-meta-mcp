@@ -23,7 +23,7 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
 
     async currentBudget(entityId): Promise<CurrentBudget | null> {
       const r = await client.get<Record<string, unknown>>(`/${entityId}`, {
-        fields: "daily_budget,lifetime_budget,campaign{daily_budget,lifetime_budget}",
+        fields: "daily_budget,lifetime_budget,effective_status,campaign{daily_budget,lifetime_budget}",
       });
       const dailyBudget = toMajor(r?.daily_budget);
       const lifetimeBudget = toMajor(r?.lifetime_budget);
@@ -35,17 +35,24 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
       if (!adsetHasBudget && !campHasBudget) return null;
       // CBO: the budget lives on the campaign, not the ad set.
       const ownedByCampaignCbo = !adsetHasBudget && campHasBudget;
-      return { dailyBudget, lifetimeBudget, ownedByCampaignCbo };
+      const status = r?.effective_status;
+      const effectiveStatus = typeof status === "string" && status !== "" ? status : null;
+      return { dailyBudget, lifetimeBudget, ownedByCampaignCbo, effectiveStatus };
     },
 
-    // Live sum of ACTIVE ad sets' OWN daily budgets, mirroring the snapshot
-    // job's criteria so the account cap compares like with like. Fail-closed:
-    // a malformed page, malformed budget, or runaway pagination returns null
-    // (the guard refuses); it never returns a partial sum.
+    // Live sum of delivering ad sets' OWN daily budgets — the base of the
+    // cumulative account cap. Fail-closed rules: a malformed page/budget or a
+    // MISSING status returns null (the guard refuses); only statuses known to
+    // be idle are excluded; any unrecognized status is COUNTED (overcounting
+    // raises the projection, which tightens the cap — the safe direction).
+    // Never returns a partial sum. Page cap sized generously above the
+    // account's real ad-set count but small enough to bound the guard's
+    // worst-case read time (the account write-lock lease must outlast it).
     async accountActiveDailyBudgetTotal(): Promise<number | null> {
+      const KNOWN_IDLE = new Set(["PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED", "ARCHIVED", "DELETED", "DISAPPROVED"]);
       let after: string | undefined;
       let total = 0;
-      for (let page = 0; page < 50; page++) {
+      for (let page = 0; page < 10; page++) {
         const r = await client.get<{
           data?: Array<Record<string, unknown>>;
           paging?: { next?: string; cursors?: { after?: string } };
@@ -56,7 +63,9 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
         });
         if (!Array.isArray(r?.data)) return null; // malformed page = unknown
         for (const row of r.data) {
-          if (row?.effective_status !== "ACTIVE") continue;
+          const status = row?.effective_status;
+          if (typeof status !== "string" || status === "") return null; // unknown status = unknown total
+          if (KNOWN_IDLE.has(status)) continue; // definitively not delivering
           if (row?.daily_budget == null || row.daily_budget === "") continue; // CBO / no own budget
           const major = toMajor(row.daily_budget);
           if (major === null || major < 0) return null; // malformed budget = unknown
