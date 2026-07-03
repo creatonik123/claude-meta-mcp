@@ -62,8 +62,12 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
           if (major === null || major < 0) return null; // malformed budget = unknown
           total += major;
         }
-        if (!r.paging?.next || !r.paging?.cursors?.after) return total;
-        after = r.paging.cursors.after;
+        if (!r.paging?.next) return total; // no more pages — the sum is complete
+        const nextAfter = r.paging?.cursors?.after;
+        if (typeof nextAfter !== "string" || nextAfter === "") {
+          return null; // more data exists but no usable cursor — NEVER a partial sum
+        }
+        after = nextAfter;
       }
       return null; // pagination did not terminate — treat as unknown
     },

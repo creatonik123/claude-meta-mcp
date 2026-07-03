@@ -226,6 +226,54 @@ test("a DECREASE is never blocked by the account cap, even with a huge live tota
   assert.equal(d.effectiveArgs.dailyBudget, 90);
 });
 
+// ---- lower-then-restore: raising the LIVE budget faces the caps even at/below the SoD baseline ----
+test("restore-raise (at the SoD baseline but above the live budget) still faces the account cap", async () => {
+  // baseline 100, live current 10 (lowered earlier), request 100 -> not an
+  // 'increase' vs baseline, but it RAISES live capacity by 90. Other ad sets
+  // already consumed the headroom: live total 1150, SoD 1000, ceiling 1200 ->
+  // projected 1150 - 10 + 100 = 1240 >= 1200 -> refuse.
+  const d = await evaluate("adjust_adset_budget", budget(100), makeDeps({
+    meta: {
+      currentBudget: async () => ({ dailyBudget: 10, lifetimeBudget: null, ownedByCampaignCbo: false }),
+      accountActiveDailyBudgetTotal: async () => 1150,
+    },
+  }));
+  expectRefuse(d, "account_cap");
+});
+
+test("restore-raise also faces the realised-spend caps", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(100), makeDeps({
+    meta: {
+      currentBudget: async () => ({ dailyBudget: 10, lifetimeBudget: null, ownedByCampaignCbo: false }),
+      realisedSpend: async () => ({ today: 300, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
+    },
+  }));
+  expectRefuse(d, "daily_spend_cap");
+});
+
+test("a true decrease vs the LIVE budget skips the account/spend ceilings", async () => {
+  // current 100, request 90: lowers live capacity even though other totals are hot
+  const d = await evaluate("adjust_adset_budget", budget(90), makeDeps({
+    meta: {
+      accountActiveDailyBudgetTotal: async () => 999999,
+      realisedSpend: async () => ({ today: 339, monthToDate: 9200, dateStop: "2026-06-14", complete: true }),
+    },
+  }));
+  expectAllow(d);
+});
+
+// ---- pins the `- entityCurrent` swap in the projection (allow-case) ----
+test("account-cap projection swaps the entity's live budget for the clamped value", async () => {
+  // live total 1150 INCLUDES this entity at 100; raising to 110 projects
+  // 1150 - 100 + 110 = 1160 < 1200 -> ALLOW. (Double-counting the entity —
+  // dropping the subtraction — would project 1260 and wrongly refuse.)
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
+    meta: { accountActiveDailyBudgetTotal: async () => 1150 },
+  }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 110);
+});
+
 // ---- spend caps (on a real increase) ----
 test("clamped increase still over same-day spend limit -> REFUSE (not proceed)", async () => {
   const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({ meta: { realisedSpend: async () => ({ today: 280, monthToDate: 2000, dateStop: "2026-06-14", complete: true }) } }));

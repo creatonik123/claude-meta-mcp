@@ -156,29 +156,88 @@ const TOOL_DEFS: Array<{
   },
 ];
 
+// One lock key serializes every budget decision+write on the account. The
+// guard's cumulative account cap is check-then-act over a LIVE total read, so
+// two concurrent budget decisions could each observe the pre-write total and
+// jointly exceed the day ceiling; holding this lock across the whole
+// decide->execute span closes that race.
+export const ACCOUNT_BUDGET_LOCK = "account_budget";
+
 export function registerGatedWriteTools(
   mcp: ToolRegistrar,
   deps: Pick<ExecutionDeps, "guardDeps" | "doerDeps" | "audit">
 ): string[] {
   const registered: string[] = [];
+
+  const decideAndExecute = async (action: ActionType, guardArgs: Record<string, unknown>) => {
+    // Decision first (always audited); execution only on an allow. An
+    // unlogged allow is downgraded to a refusal inside runGuardedDecision.
+    const decision = await runGuardedDecision(action, guardArgs, deps.guardDeps, deps.audit);
+    const outcome = decision.allowed
+      ? await executeAndAudit(action, decision, deps.doerDeps, deps.audit, deps.guardDeps.now)
+      : null;
+    const payload = {
+      decision,
+      execution: outcome?.execution ?? null,
+      audited: outcome?.audited ?? null,
+    };
+    return { content: [{ type: "text", text: JSON.stringify(payload) }] };
+  };
+
+  const refuseLocked = async (action: ActionType, guardArgs: Record<string, unknown>) => {
+    const decision = {
+      allowed: false as const,
+      code: "account_budget_locked",
+      reason: "another budget change is being decided or applied — serialized for the account cap, retry shortly",
+    };
+    let ts: string;
+    try {
+      ts = deps.guardDeps.now().toISOString();
+    } catch {
+      ts = "unknown";
+    }
+    try {
+      await deps.audit.write({
+        ts,
+        actor: "agent",
+        action: "adjust_adset_budget",
+        entityId: typeof guardArgs.entityId === "string" ? guardArgs.entityId : null,
+        ruleTriggered: decision.code,
+        result: "refused",
+        details: { reason: decision.reason },
+      });
+    } catch {
+      // the refusal stands whether or not it could be logged
+    }
+    return { content: [{ type: "text", text: JSON.stringify({ decision, execution: null, audited: null }) }] };
+  };
+
   for (const def of TOOL_DEFS) {
     const action = TOOL_TO_ACTION[def.name];
     mcp.registerTool(
       def.name,
       { description: def.description, inputSchema: def.inputSchema },
       async (args: Record<string, unknown>) => {
-        // Decision first (always audited); execution only on an allow. An
-        // unlogged allow is downgraded to a refusal inside runGuardedDecision.
-        const decision = await runGuardedDecision(action, def.guardArgs(args ?? {}), deps.guardDeps, deps.audit);
-        const outcome = decision.allowed
-          ? await executeAndAudit(action, decision, deps.doerDeps, deps.audit, deps.guardDeps.now)
-          : null;
-        const payload = {
-          decision,
-          execution: outcome?.execution ?? null,
-          audited: outcome?.audited ?? null,
-        };
-        return { content: [{ type: "text", text: JSON.stringify(payload) }] };
+        const guardArgs = def.guardArgs(args ?? {});
+        if (action !== "adjust_adset_budget") {
+          return decideAndExecute(action, guardArgs);
+        }
+        let locked = false;
+        try {
+          locked = await deps.doerDeps.coordinator.acquire(ACCOUNT_BUDGET_LOCK);
+        } catch {
+          locked = false; // lock store unreachable = fail-closed refusal below
+        }
+        if (!locked) return refuseLocked(action, guardArgs);
+        try {
+          return await decideAndExecute(action, guardArgs);
+        } finally {
+          try {
+            await deps.doerDeps.coordinator.release(ACCOUNT_BUDGET_LOCK);
+          } catch {
+            // lease expiry reclaims an unreleased lock
+          }
+        }
       }
     );
     registered.push(def.name);

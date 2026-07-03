@@ -317,8 +317,19 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
   // so the caps check the exact value we'd write.
   const maxUp = baseline * (1 + bc.maxSingleChangePct / 100);
   const clamped = Math.floor(Math.min(requested, maxUp));
-  // the ceilings below apply to increases only (decreases are always safe)
+  // Two distinct "increase" notions gate the ceilings below:
+  // - isIncrease: above the FROZEN start-of-day baseline (per-entity clamp and
+  //   cross-day creep semantics).
+  // - raisesLive: above the entity's CURRENT live budget. A write at/below the
+  //   baseline can still RAISE live spend capacity (lower-then-restore), so the
+  //   account cap and spend caps must also run for those — otherwise N restores
+  //   compound past the daily ceilings without ever counting as an "increase".
   const isIncrease = clamped > baseline;
+  const entityCurrent = cb.value.dailyBudget;
+  if (!isFinitePositive(entityCurrent)) {
+    return refuse("budget_unknown", "entity's current daily budget unreadable — refused (fail-closed)");
+  }
+  const raisesLive = clamped > entityCurrent;
 
   // Stop a budget creeping up over many days (e.g. +25% nightly): refuse if it
   // passes a multiple of the 30-day normal. No 30d history yet -> skip.
@@ -332,15 +343,15 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
     );
   }
 
-  // Account aggregate cap (increases only — a decrease must never be blocked
-  // by account totals): the projected LIVE account total may not reach
-  // +maxAccountChangePerDayPct over the frozen SoD total. Using the live total
-  // (current entity budget swapped for the clamped value) makes the cap
-  // CUMULATIVE: increases already applied earlier today — by the agent on
-  // other ad sets, or by a human — consume the same day headroom. A
-  // per-decision delta against the frozen total alone would let N distinct
-  // ad-set raises compound to the per-entity bound instead.
-  if (isIncrease) {
+  // Account aggregate cap (only when live spend capacity goes UP — a true
+  // decrease must never be blocked by account totals): the projected LIVE
+  // account total may not reach +maxAccountChangePerDayPct over the frozen SoD
+  // total. Using the live total (current entity budget swapped for the clamped
+  // value) makes the cap CUMULATIVE: increases already applied earlier today —
+  // by the agent on other ad sets, or by a human — consume the same day
+  // headroom. A per-decision delta against the frozen total alone would let N
+  // distinct ad-set raises compound to the per-entity bound instead.
+  if (isIncrease || raisesLive) {
     const acctRead = await failClosed(() => db.accountStartOfDayTotal(day), "acct_sod_unreadable", "account SoD total");
     if (!acctRead.ok) return acctRead.decision;
     const acctSoD = acctRead.value;
@@ -353,10 +364,6 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
     if (!isFinitePositive(liveTotal)) {
       return refuse("acct_live_missing", "could not read the live account budget total — refused (fail-closed)");
     }
-    const entityCurrent = cb.value.dailyBudget;
-    if (!isFinitePositive(entityCurrent)) {
-      return refuse("budget_unknown", "entity's current daily budget unreadable — refused (fail-closed)");
-    }
     const projectedAcctTotal = liveTotal - entityCurrent + clamped;
     if (projectedAcctTotal >= acctSoD * (1 + bc.maxAccountChangePerDayPct / 100)) {
       return refuse(
@@ -366,8 +373,8 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
     }
   }
 
-  // Spend cap (only matters when increasing): enforce on REAL realised spend.
-  if (isIncrease) {
+  // Spend cap (whenever live spend capacity goes up): enforce on REAL realised spend.
+  if (isIncrease || raisesLive) {
     const spendRead = await failClosed(() => meta.realisedSpend(), "spend_unreadable", "realised spend");
     if (!spendRead.ok) return spendRead.decision;
     const spend = spendRead.value;

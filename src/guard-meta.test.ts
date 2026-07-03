@@ -133,3 +133,16 @@ test("accountActiveDailyBudgetTotal returns 0 when no ACTIVE ad set owns a budge
   const m = createGuardMeta(fakeClient({ [`/${ACCT}/adsets`]: { data: [{ daily_budget: "5000", effective_status: "PAUSED" }] } }), ACCT, 100);
   assert.equal(await m.accountActiveDailyBudgetTotal(), 0);
 });
+
+test("accountActiveDailyBudgetTotal fails closed (null) when next exists but the after cursor is unusable", async () => {
+  // more data exists (paging.next) but no cursor to fetch it -> NEVER a partial sum
+  const noCursors = { data: [{ daily_budget: "10000", effective_status: "ACTIVE" }], paging: { next: "https://graph" } };
+  const emptyAfter = { data: [{ daily_budget: "10000", effective_status: "ACTIVE" }], paging: { next: "https://graph", cursors: { after: "" } } };
+  for (const page of [noCursors, emptyAfter]) {
+    const client = {
+      async get() { return page as never; },
+      async post() { throw new Error("guard-meta must never POST"); },
+    };
+    assert.equal(await createGuardMeta(client, ACCT, 100).accountActiveDailyBudgetTotal(), null);
+  }
+});

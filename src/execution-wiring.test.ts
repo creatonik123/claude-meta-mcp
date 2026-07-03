@@ -7,6 +7,7 @@ import {
   registerGatedWriteTools,
   wireExecution,
   withDayScopedDedupe,
+  ACCOUNT_BUDGET_LOCK,
 } from "./execution-wiring.ts";
 import { GATED_WRITE_TOOLS } from "./tool-gate.ts";
 import { loadGuardConfig } from "./load-config.ts";
@@ -68,7 +69,10 @@ function fakeGuardDeps(config: GuardConfig, audits: AuditEntry[]): { guardDeps: 
   };
 }
 
-function fakeDoerDeps(writes: Array<{ path: string; body: Record<string, unknown> }>): DoerDeps {
+function fakeDoerDeps(
+  writes: Array<{ path: string; body: Record<string, unknown> }>,
+  lockLog: string[] = []
+): DoerDeps {
   let budgetAfterWrite = "100";
   return {
     executionEnabled: true,
@@ -84,8 +88,13 @@ function fakeDoerDeps(writes: Array<{ path: string; body: Record<string, unknown
         fields[0] === "status" ? { status: "PAUSED" } : { daily_budget: budgetAfterWrite },
     },
     coordinator: {
-      acquire: async () => true,
-      release: async () => {},
+      acquire: async (k) => {
+        lockLog.push(`acquire:${k}`);
+        return true;
+      },
+      release: async (k) => {
+        lockLog.push(`release:${k}`);
+      },
       alreadyApplied: async () => false,
       markApplied: async () => {},
     },
@@ -284,6 +293,50 @@ test("extra fields from the model CANNOT smuggle past the schema (guard args are
   const payload = JSON.parse(res.content[0].text);
   assert.equal(payload.decision.allowed, true);
   assert.deepEqual(writes, [{ path: "/as_1", body: { status: "PAUSED" } }]);
+});
+
+// ---- budget decisions serialize through the account-wide lock ----
+
+test("a budget call holds the account lock across decide+execute and releases it", async () => {
+  const mcp = fakeMcp();
+  const audits: AuditEntry[] = [];
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const lockLog: string[] = [];
+  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes, lockLog), audit });
+
+  await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110 });
+  assert.equal(lockLog[0], `acquire:${ACCOUNT_BUDGET_LOCK}`); // account lock FIRST
+  assert.equal(lockLog[lockLog.length - 1], `release:${ACCOUNT_BUDGET_LOCK}`); // released LAST
+  assert.ok(lockLog.includes("acquire:as_1")); // the doer's per-entity lock nests inside
+});
+
+test("a contended account lock refuses the budget call (audited), never writes", async () => {
+  const mcp = fakeMcp();
+  const audits: AuditEntry[] = [];
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
+  const doerDeps = fakeDoerDeps(writes);
+  doerDeps.coordinator.acquire = async (k) => k !== ACCOUNT_BUDGET_LOCK; // account lock held elsewhere
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps, audit });
+
+  const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110 })) as { content: Array<{ text: string }> };
+  const payload = JSON.parse(res.content[0].text);
+  assert.equal(payload.decision.allowed, false);
+  assert.equal(payload.decision.code, "account_budget_locked");
+  assert.equal(writes.length, 0);
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].result, "refused");
+  assert.equal(audits[0].ruleTriggered, "account_budget_locked");
+});
+
+test("pause does NOT take the account budget lock", async () => {
+  const mcp = fakeMcp();
+  const lockLog: string[] = [];
+  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), []);
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps([], lockLog), audit });
+  await mcp.tools.pause_entity.cb({ entityId: "as_1" });
+  assert.ok(!lockLog.some((l) => l.includes(ACCOUNT_BUDGET_LOCK)));
 });
 
 test("a malformed entityId is refused by the guard, not thrown", async () => {
