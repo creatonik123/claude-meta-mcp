@@ -7,6 +7,19 @@
 import type { GuardMeta, CurrentBudget, SpendSnapshot } from "./guard.js";
 import type { GraphClient } from "./meta-adapters.js";
 
+// Statuses that DEFINITIVELY do not deliver — the only ones excluded from the
+// live account total. Exported so its exact membership is pinned by a test:
+// widening it (e.g. with transitional statuses like IN_PROCESS/WITH_ISSUES)
+// would UNDERCOUNT the live total and loosen the cumulative account cap.
+export const KNOWN_IDLE_STATUSES: ReadonlySet<string> = new Set([
+  "PAUSED",
+  "CAMPAIGN_PAUSED",
+  "ADSET_PAUSED",
+  "ARCHIVED",
+  "DELETED",
+  "DISAPPROVED",
+]);
+
 export function createGuardMeta(client: GraphClient, accountId: string, currencyOffset: number): GuardMeta {
   const toMajor = (v: unknown): number | null => {
     if (v == null || v === "") return null;
@@ -49,7 +62,6 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
     // account's real ad-set count but small enough to bound the guard's
     // worst-case read time (the account write-lock lease must outlast it).
     async accountActiveDailyBudgetTotal(): Promise<number | null> {
-      const KNOWN_IDLE = new Set(["PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED", "ARCHIVED", "DELETED", "DISAPPROVED"]);
       let after: string | undefined;
       let total = 0;
       for (let page = 0; page < 10; page++) {
@@ -65,7 +77,7 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
         for (const row of r.data) {
           const status = row?.effective_status;
           if (typeof status !== "string" || status === "") return null; // unknown status = unknown total
-          if (KNOWN_IDLE.has(status)) continue; // definitively not delivering
+          if (KNOWN_IDLE_STATUSES.has(status)) continue; // definitively not delivering
           if (row?.daily_budget == null || row.daily_budget === "") continue; // CBO / no own budget
           const major = toMajor(row.daily_budget);
           if (major === null || major < 0) return null; // malformed budget = unknown

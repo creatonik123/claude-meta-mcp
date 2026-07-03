@@ -7,7 +7,10 @@ import {
   registerGatedWriteTools,
   wireExecution,
   withDayScopedDedupe,
+  ACCOUNT_BUDGET_LOCK,
+  ACCOUNT_LOCK_TTL_SECONDS,
 } from "./execution-wiring.ts";
+import type { createDbCoordinator } from "./coordinator-db.ts";
 import { GATED_WRITE_TOOLS } from "./tool-gate.ts";
 import { loadGuardConfig } from "./load-config.ts";
 import type { GuardConfig, GuardDeps } from "./guard.ts";
@@ -384,6 +387,36 @@ test("buildExecutionDeps applies the day-scoped dedupe wrapper and a per-call ac
   assert.equal(typeof l1.acquire, "function");
   assert.equal(typeof l1.release, "function");
   assert.notEqual(l1, l2);
+});
+
+test("account locks are built with the dedicated 900s lease and a FRESH holder per call (pinned)", async () => {
+  // Observes the actual (holder, ttl) each coordinator is constructed with —
+  // object identity cannot: a refactor sharing one holder or dropping the TTL
+  // back to the 120s doer default must fail HERE.
+  const made: Array<{ holder: string; ttl?: number }> = [];
+  const spy: typeof createDbCoordinator = (_sql, holder, ttl) => {
+    made.push({ holder, ttl });
+    return {
+      acquire: async (k: string) => k === ACCOUNT_BUDGET_LOCK || k.length > 0,
+      release: async () => {},
+      alreadyApplied: async () => false,
+      markApplied: async () => {},
+    };
+  };
+  const built = buildExecutionDeps({ DATABASE_URL: "postgres://u:p@h/db" }, fakeClient, offConfig(), spy);
+  await built.accountLock().acquire();
+  await built.accountLock().acquire();
+
+  assert.equal(ACCOUNT_LOCK_TTL_SECONDS, 900);
+  // [0] = the doer coordinator: boot holder, default (doer-calibrated) lease
+  assert.equal(made[0].ttl, undefined);
+  assert.match(made[0].holder, /^mcp-/);
+  // [1],[2] = the two account locks: dedicated lease + distinct per-call holders
+  assert.equal(made[1].ttl, ACCOUNT_LOCK_TTL_SECONDS);
+  assert.equal(made[2].ttl, ACCOUNT_LOCK_TTL_SECONDS);
+  assert.ok(made[1].holder.startsWith(`${made[0].holder}:albk:`));
+  assert.ok(made[2].holder.startsWith(`${made[0].holder}:albk:`));
+  assert.notEqual(made[1].holder, made[2].holder);
 });
 
 test("a malformed entityId is refused by the guard, not thrown", async () => {

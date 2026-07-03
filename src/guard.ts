@@ -353,15 +353,19 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
   const raisesLive = clamped > entityCurrent;
 
   // Stop a budget creeping up over many days (e.g. +25% nightly): refuse if it
-  // passes a multiple of the 30-day normal. No 30d history yet -> skip.
-  const b30Read = await failClosed(() => db.budgetBaseline30d(entityId, day), "b30_unreadable", "30-day budget baseline");
-  if (!b30Read.ok) return b30Read.decision;
-  const b30 = b30Read.value;
-  if (isIncrease && isFinitePositive(b30) && clamped >= b30 * bc.crossDayMaxMultipleVs30dBaseline) {
-    return refuse(
-      "cross_day_creep",
-      `budget ${clamped.toFixed(2)} exceeds ${bc.crossDayMaxMultipleVs30dBaseline}x the 30-day baseline (${b30})`
-    );
+  // passes a multiple of the 30-day normal. No 30d history yet -> skip. The
+  // read runs ONLY for increases — its value has no role otherwise, and a
+  // transient read failure must never block a write in the safe direction.
+  if (isIncrease) {
+    const b30Read = await failClosed(() => db.budgetBaseline30d(entityId, day), "b30_unreadable", "30-day budget baseline");
+    if (!b30Read.ok) return b30Read.decision;
+    const b30 = b30Read.value;
+    if (isFinitePositive(b30) && clamped >= b30 * bc.crossDayMaxMultipleVs30dBaseline) {
+      return refuse(
+        "cross_day_creep",
+        `budget ${clamped.toFixed(2)} exceeds ${bc.crossDayMaxMultipleVs30dBaseline}x the 30-day baseline (${b30})`
+      );
+    }
   }
 
   // Account aggregate cap (only when live spend capacity goes UP — anything

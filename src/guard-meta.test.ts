@@ -188,3 +188,11 @@ test("currentBudget surfaces effective_status; missing -> null (guard refuses bu
   );
   assert.equal((await noStatus.currentBudget("23890"))?.effectiveStatus, null);
 });
+
+test("KNOWN_IDLE_STATUSES membership is pinned exactly — widening it would loosen the account cap", async () => {
+  const { KNOWN_IDLE_STATUSES } = await import("./guard-meta.ts");
+  assert.deepEqual(
+    [...KNOWN_IDLE_STATUSES].sort(),
+    ["ADSET_PAUSED", "ARCHIVED", "CAMPAIGN_PAUSED", "DELETED", "DISAPPROVED", "PAUSED"]
+  );
+});

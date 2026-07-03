@@ -398,6 +398,21 @@ test("cross-day creep does NOT block pulling a runaway budget DOWN", async () =>
   assert.equal(d.effectiveArgs.dailyBudget, 100);
 });
 
+test("a FAILING 30d-baseline read does not block a decrease (read runs only for increases)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(90), makeDeps({
+    db: { budgetBaseline30d: async () => { throw new Error("db blip"); } },
+  }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 90);
+});
+
+test("a FAILING 30d-baseline read still refuses an increase (fail-closed where it matters)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
+    db: { budgetBaseline30d: async () => { throw new Error("db blip"); } },
+  }));
+  expectRefuse(d, "b30_unreadable");
+});
+
 // ---- cross-day creep inclusive boundary, isolated on an increase ----
 test("cross-day creep refuses exactly at 2x the 30d baseline (increase)", async () => {
   // baseline 100, request 120, 30d baseline 60 -> ceiling 120, clamped 120, increase, 120>=120 -> refuse

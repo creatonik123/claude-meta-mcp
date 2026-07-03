@@ -110,7 +110,10 @@ function accountDay(timeZone: string): string {
 export function buildExecutionDeps(
   env: Record<string, string | undefined>,
   client: GraphClient,
-  guardConfig: GuardConfig
+  guardConfig: GuardConfig,
+  // injectable ONLY so tests can pin the holder/lease each coordinator is
+  // built with (a plain object-identity check cannot observe either)
+  createCoord: typeof createDbCoordinator = createDbCoordinator
 ): ExecutionDeps {
   const currencyOffset = currencyOffsetFor(guardConfig.currency);
   const sql = createNeonSql(env.DATABASE_URL);
@@ -119,7 +122,7 @@ export function buildExecutionDeps(
   const accountLock = () => {
     // fresh holder per call: after a lease-expiry takeover, this call's release
     // matches only its own row and cannot delete the takeover's lock
-    const c = createDbCoordinator(sql, `${holder}:albk:${++lockSeq}`, ACCOUNT_LOCK_TTL_SECONDS);
+    const c = createCoord(sql, `${holder}:albk:${++lockSeq}`, ACCOUNT_LOCK_TTL_SECONDS);
     return {
       acquire: () => c.acquire(ACCOUNT_BUDGET_LOCK),
       release: () => c.release(ACCOUNT_BUDGET_LOCK),
@@ -138,7 +141,7 @@ export function buildExecutionDeps(
       executionEnabled: true, // reached only behind resolveExecutionEnabled
       writer: createMetaWriter(client),
       reader: createMetaReader(client),
-      coordinator: withDayScopedDedupe(createDbCoordinator(sql, holder), () =>
+      coordinator: withDayScopedDedupe(createCoord(sql, holder), () =>
         accountDay(guardConfig.accountTimezone)
       ),
       currencyOffset,
