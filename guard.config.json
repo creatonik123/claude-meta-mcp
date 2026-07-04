@@ -2,6 +2,7 @@
   "managedAccountId": "act_1133075730765139",
   "deniedAccountIds": ["act_2218833115522041"],
   "currency": "AUD",
+  "accountTimezone": "Australia/Sydney",
   "actionModes": {
     "pause": "off",
     "adjust_adset_budget": "off",
@@ -19,7 +20,6 @@
     "dailyAud": 340,
     "monthlyAud": 9250,
     "sameDayDecisionFractionOfDailyCap": 0.8,
-    "spendSnapshotMaxAgeMinutes": 60,
     "monthEndRevisionBufferAud": 300
   },
   "targets": {

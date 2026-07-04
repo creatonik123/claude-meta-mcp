@@ -10,11 +10,23 @@ import type { GuardConfig } from "./guard.js";
 
 const Mode = z.enum(["off", "confirm", "auto"]);
 
+// A typo'd timezone must refuse at BOOT, not surface as per-decision tz_invalid
+// refusals at runtime. The guard still re-checks at decision time (defense in depth).
+function isIanaTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const ConfigSchema = z
   .object({
     managedAccountId: z.string().min(1),
     deniedAccountIds: z.array(z.string()),
     currency: z.string().optional(),
+    accountTimezone: z.string().min(1).refine(isIanaTimeZone, { message: "accountTimezone must be a valid IANA timezone" }),
     actionModes: z
       .object({
         pause: Mode,
@@ -37,7 +49,6 @@ const ConfigSchema = z
         dailyAud: z.number().positive(),
         monthlyAud: z.number().positive(),
         sameDayDecisionFractionOfDailyCap: z.number().positive(),
-        spendSnapshotMaxAgeMinutes: z.number().positive(),
         monthEndRevisionBufferAud: z.number().nonnegative(),
       })
       .strict(),
@@ -48,10 +59,14 @@ const ConfigSchema = z
 
 const FORBIDDEN_ACCOUNT = "act_2218833115522041";
 
+/** Validate an already-parsed config object. Throws on anything malformed. */
+export function parseGuardConfig(raw: unknown): GuardConfig {
+  return ConfigSchema.parse(raw) as GuardConfig;
+}
+
 /** Read + validate guard.config.json (next to the package root). */
 export function loadGuardConfig(url = new URL("../guard.config.json", import.meta.url)): GuardConfig {
-  const raw = JSON.parse(readFileSync(url, "utf8"));
-  return ConfigSchema.parse(raw) as GuardConfig;
+  return parseGuardConfig(JSON.parse(readFileSync(url, "utf8")));
 }
 
 /**

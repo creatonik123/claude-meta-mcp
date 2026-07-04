@@ -16,6 +16,11 @@ export interface CurrentBudget {
   dailyBudget: number | null; // account-currency major units (e.g. AUD)
   lifetimeBudget: number | null;
   ownedByCampaignCbo: boolean;
+  // Meta effective_status at read time; null = unreadable (guard refuses).
+  // Budget writes are allowed on ACTIVE ad sets only: a non-ACTIVE ad set is
+  // excluded from the live account total, so its budget delta would escape
+  // the account-cap projection (phantom headroom).
+  effectiveStatus: string | null;
 }
 
 export interface SpendSnapshot {
@@ -25,10 +30,16 @@ export interface SpendSnapshot {
   complete: boolean; // false if Meta returned an empty/partial page
 }
 
+export interface AccountLiveBudget {
+  total: number; // live sum of delivering ad sets' own daily budgets (major units)
+  entityCounted: number; // the target entity's contribution INSIDE total (0 if it was not counted)
+}
+
 export interface GuardConfig {
   managedAccountId: string;
   deniedAccountIds: string[];
   currency?: string;
+  accountTimezone: string; // IANA tz of the ad account (e.g. "Australia/Sydney") — day boundaries follow this, not UTC
   actionModes: Record<ActionType, ActionMode>;
   killSwitchEnvFlag: string;
   budgetClamp: {
@@ -42,7 +53,6 @@ export interface GuardConfig {
     dailyAud: number;
     monthlyAud: number;
     sameDayDecisionFractionOfDailyCap: number;
-    spendSnapshotMaxAgeMinutes: number;
     monthEndRevisionBufferAud: number;
   };
   targets: { targetCplAud: number; provisional: boolean };
@@ -55,16 +65,24 @@ export interface GuardDb {
   approvalByHash(hash: string): Promise<{ consumed: boolean } | null>;
   startOfDayBudget(entityId: string, day: string): Promise<number | null>;
   accountStartOfDayTotal(day: string): Promise<number | null>;
-  // Trailing 30-day budget baseline for the cross-day creep ceiling.
-  // null = no baseline yet (the creep check is skipped; the per-change,
-  // account, and spend caps still apply). A thrown error fails closed.
-  budgetBaseline30d(entityId: string): Promise<number | null>;
+  // Trailing 30-day budget baseline for the cross-day creep ceiling: the 30
+  // account-tz days strictly BEFORE the given day (the anchor day's own
+  // snapshot is excluded — it is the value under judgment). Never the DB
+  // server's clock, which is UTC. null = no history yet (the creep check is
+  // skipped; the per-change, account, and spend caps still apply). A thrown
+  // error fails closed.
+  budgetBaseline30d(entityId: string, day: string): Promise<number | null>;
 }
 
 export interface GuardMeta {
   entityAccountId(entityId: string): Promise<string | null>;
   currentBudget(entityId: string): Promise<CurrentBudget | null>;
   realisedSpend(): Promise<SpendSnapshot | null>;
+  // LIVE sum of the account's ACTIVE ad sets' own daily budgets (major units).
+  // The account cap compares the projected live total against the frozen
+  // start-of-day ceiling, so same-day increases already applied — by the agent
+  // or a human — consume the day's headroom. null/unreadable = refuse.
+  accountActiveDailyBudgetTotal(entityId: string): Promise<AccountLiveBudget | null>;
 }
 
 export interface GuardDeps {
@@ -95,8 +113,20 @@ function isFinitePositive(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n > 0;
 }
 
-function dayString(now: Date): string {
-  return now.toISOString().slice(0, 10); // YYYY-MM-DD (account-tz handling: follow-up)
+// Calendar date in the ACCOUNT's timezone (not UTC). Start-of-day baselines and
+// "spent today" must align with how Meta reports the account, or a decision near
+// UTC-midnight reads the wrong day. Throws on an unusable tz (caller fails closed).
+function dayString(now: Date, timeZone: string): string {
+  const s = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now); // en-CA => "YYYY-MM-DD"
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    throw new Error(`could not resolve account-tz date (got '${s}')`);
+  }
+  return s;
 }
 
 // Run an async safety read; ANY throw becomes a fail-closed refusal.
@@ -255,7 +285,13 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
   const { config, db, meta, now } = deps;
   const entityId = String(args.entityId);
   const requested = args.dailyBudget as number;
-  const day = dayString(now());
+  let day: string;
+  try {
+    day = dayString(now(), config.accountTimezone);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return refuse("tz_invalid", `account timezone unusable — refused (fail-closed): ${msg}`);
+  }
   const bc = config.budgetClamp;
 
   // Budget locus: refuse CBO ad-set budget writes (budget lives on the campaign).
@@ -277,7 +313,22 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
     }
   }
 
-  // Baseline = frozen start-of-day snapshot. No snapshot / non-finite = refuse.
+  // Budget writes only on ACTIVE (delivering) ad sets. A non-ACTIVE ad set is
+  // not in the live account total, so subtracting its current budget from that
+  // total would grant phantom headroom; and raising an idle budget does nothing
+  // until a reactivation silently lands it outside the day's cap accounting.
+  if (cb.value.effectiveStatus !== "ACTIVE") {
+    return refuse(
+      "budget_entity_not_active",
+      `ad set effective_status is '${String(cb.value.effectiveStatus)}' — budget writes allowed on ACTIVE ad sets only (fail-closed)`
+    );
+  }
+
+  // Baseline = frozen start-of-day snapshot. No snapshot / non-finite = refuse —
+  // deliberately for ALL writes including decreases: without a baseline the
+  // clamp math has no anchor, and an ad set created mid-day simply waits for
+  // tomorrow's snapshot. Emergency spend cuts stay available through `pause`,
+  // which needs no baseline.
   const sodRead = await failClosed(() => db.startOfDayBudget(entityId, day), "sod_unreadable", "start-of-day budget");
   if (!sodRead.ok) return sodRead.decision;
   const baseline = sodRead.value;
@@ -290,38 +341,81 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
   // so the caps check the exact value we'd write.
   const maxUp = baseline * (1 + bc.maxSingleChangePct / 100);
   const clamped = Math.floor(Math.min(requested, maxUp));
-  // the ceilings below apply to increases only (decreases are always safe)
-  const isIncrease = clamped > baseline;
+  // raisesLive: above the entity's CURRENT live budget. Every value ceiling
+  // (cross-day creep, account cap, spend caps) gates on it — live spend
+  // capacity is what those ceilings protect. A write at/below the frozen SoD
+  // baseline can still RAISE it (lower-then-restore: re-raising a budget a
+  // human cut mid-day) and must be checked, while a write above the baseline
+  // that walks a hot budget back DOWN lowers it and must never be blocked.
+  const entityCurrent = cb.value.dailyBudget;
+  if (!isFinitePositive(entityCurrent)) {
+    return refuse("budget_unknown", "entity's current daily budget unreadable — refused (fail-closed)");
+  }
+  // Accepted residual: this classification uses the currentBudget read above,
+  // so a human edit landing between that read and this decision can misgate
+  // one write. Bounded — the clamp caps any budget write at SoD x 1.25 and the
+  // account-cap projection measures the entity inside its own walk — and not
+  // closable from here: Meta offers no compare-and-swap.
+  const raisesLive = clamped > entityCurrent;
 
   // Stop a budget creeping up over many days (e.g. +25% nightly): refuse if it
-  // passes a multiple of the 30-day normal. No 30d history yet -> skip.
-  const b30Read = await failClosed(() => db.budgetBaseline30d(entityId), "b30_unreadable", "30-day budget baseline");
-  if (!b30Read.ok) return b30Read.decision;
-  const b30 = b30Read.value;
-  if (isIncrease && isFinitePositive(b30) && clamped >= b30 * bc.crossDayMaxMultipleVs30dBaseline) {
-    return refuse(
-      "cross_day_creep",
-      `budget ${clamped.toFixed(2)} exceeds ${bc.crossDayMaxMultipleVs30dBaseline}x the 30-day baseline (${b30})`
-    );
+  // passes a multiple of the 30-day normal. No 30d history yet -> skip. The
+  // read runs ONLY when the write raises live capacity — its value has no role
+  // otherwise, and a transient read failure must never block a walk-down.
+  if (raisesLive) {
+    const b30Read = await failClosed(() => db.budgetBaseline30d(entityId, day), "b30_unreadable", "30-day budget baseline");
+    if (!b30Read.ok) return b30Read.decision;
+    const b30 = b30Read.value;
+    if (isFinitePositive(b30) && clamped >= b30 * bc.crossDayMaxMultipleVs30dBaseline) {
+      return refuse(
+        "cross_day_creep",
+        `budget ${clamped.toFixed(2)} exceeds ${bc.crossDayMaxMultipleVs30dBaseline}x the 30-day baseline (${b30})`
+      );
+    }
   }
 
-  // Account aggregate clamp (+/- maxAccountChangePerDayPct/day vs SoD total).
-  const acctRead = await failClosed(() => db.accountStartOfDayTotal(day), "acct_sod_unreadable", "account SoD total");
-  if (!acctRead.ok) return acctRead.decision;
-  const acctSoD = acctRead.value;
-  if (!isFinitePositive(acctSoD)) {
-    return refuse("acct_baseline_missing", "no valid account start-of-day total — refused (fail-closed)");
-  }
-  const projectedAcctTotal = acctSoD + (clamped - baseline);
-  if (projectedAcctTotal >= acctSoD * (1 + bc.maxAccountChangePerDayPct / 100)) {
-    return refuse(
-      "account_cap",
-      `change would push account budget to ${projectedAcctTotal.toFixed(2)}, over +${bc.maxAccountChangePerDayPct}% of start-of-day total`
-    );
+  // Account aggregate cap (only when live spend capacity goes UP — anything
+  // that lowers the live budget must never be blocked by account totals): the
+  // projected LIVE account total may not reach +maxAccountChangePerDayPct over
+  // the frozen SoD total. Using the live total (current entity budget swapped
+  // for the clamped value) makes the cap CUMULATIVE: increases already applied
+  // earlier today — by the agent on other ad sets, or by a human — consume the
+  // same day headroom. A per-decision delta against the frozen total alone
+  // would let N distinct ad-set raises compound to the per-entity bound.
+  if (raisesLive) {
+    const acctRead = await failClosed(() => db.accountStartOfDayTotal(day), "acct_sod_unreadable", "account SoD total");
+    if (!acctRead.ok) return acctRead.decision;
+    const acctSoD = acctRead.value;
+    if (!isFinitePositive(acctSoD)) {
+      return refuse("acct_baseline_missing", "no valid account start-of-day total — refused (fail-closed)");
+    }
+    const liveRead = await failClosed(() => meta.accountActiveDailyBudgetTotal(entityId), "acct_live_unreadable", "live account budget total");
+    if (!liveRead.ok) return liveRead.decision;
+    const live = liveRead.value;
+    if (
+      live === null ||
+      !isFinitePositive(live.total) ||
+      !Number.isFinite(live.entityCounted) ||
+      live.entityCounted < 0 ||
+      live.entityCounted > live.total
+    ) {
+      return refuse("acct_live_missing", "could not read the live account budget total — refused (fail-closed)");
+    }
+    // entityCounted comes from the SAME page-walk as the total, so the swap
+    // cannot race a concurrent status change: if the entity was not counted
+    // (e.g. a human paused it mid-decision), nothing is subtracted and the
+    // full new budget projects as additional capacity — the tighter direction.
+    const projectedAcctTotal = live.total - live.entityCounted + clamped;
+    if (projectedAcctTotal >= acctSoD * (1 + bc.maxAccountChangePerDayPct / 100)) {
+      return refuse(
+        "account_cap",
+        `change would push the live account budget to ${projectedAcctTotal.toFixed(2)}, over +${bc.maxAccountChangePerDayPct}% of the start-of-day total (${acctSoD})`
+      );
+    }
   }
 
-  // Spend cap (only matters when increasing): enforce on REAL realised spend.
-  if (isIncrease) {
+  // Spend cap (whenever live spend capacity goes up): enforce on REAL realised spend.
+  if (raisesLive) {
     const spendRead = await failClosed(() => meta.realisedSpend(), "spend_unreadable", "realised spend");
     if (!spendRead.ok) return spendRead.decision;
     const spend = spendRead.value;

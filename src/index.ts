@@ -24,6 +24,8 @@ import { registerCatalogTools } from "./tools-catalogs.js";
 import { installReadOnlyGate } from "./read-only-gate.js";
 import { assertSafeToolRegistration } from "./startup-assert.js";
 import { loadGuardConfig, assertShipInvariants } from "./load-config.js";
+import { resolveExecutionEnabled } from "./execution-config.js";
+import { wireExecution } from "./execution-wiring.js";
 
 const VERSION = "0.4.0";
 
@@ -78,10 +80,14 @@ async function main(): Promise<void> {
     version: VERSION,
   });
   // Install the read-only safety gate BEFORE registering anything: only
-  // READ_ALLOWLIST names actually register; every write tool the register*
+  // READ_ALLOWLIST names actually register (plus, when the execution flag is
+  // on, the 3 guard-gated write tools); every other write tool the register*
   // functions attempt is refused and logged.
-  const { attempted, registered } = installReadOnlyGate(mcp, (name) =>
-    log("warn", "tool registration refused by AdPilot safety gate (write/unlisted)", { tool: name })
+  const executionEnabled = resolveExecutionEnabled(process.env);
+  const { attempted, registered } = installReadOnlyGate(
+    mcp,
+    (name) => log("warn", "tool registration refused by AdPilot safety gate (write/unlisted)", { tool: name }),
+    { allowGatedWrites: executionEnabled }
   );
 
   registerTools(mcp, meta);
@@ -89,15 +95,24 @@ async function main(): Promise<void> {
   registerInstagramTools(mcp, meta);
   registerCatalogTools(mcp, meta);
 
+  // Execution wiring — master flag default OFF. While off this constructs and
+  // registers NOTHING (surface identical to the read-only build). When on, it
+  // builds the guard/doer/audit deps (fail-closed), runs the execution boot
+  // guard, and registers the 3 gated write tools. Even then, every call is
+  // still refused until guard.config.json action modes leave 'off' — which
+  // assertShipInvariants above forbids in this ship state.
+  const execution = wireExecution(mcp, { env: process.env, client: meta, guardConfig });
+
   // Boot-time backstop: refuse to start if any REGISTERED (callable) tool is a
   // write that is not a guarded write — independent of the read allow-list, so
   // it fires even if the gate breaks or a write name is wrongly allow-listed.
   assertSafeToolRegistration(registered);
 
-  log("info", "AdPilot read-only mode active", {
+  log("info", execution.enabled ? "AdPilot execution wiring ACTIVE (guard-gated writes registered)" : "AdPilot read-only mode active", {
     registered_count: registered.length,
     attempted_count: attempted.length,
     registered_tools: registered,
+    execution_enabled: execution.enabled,
   });
 
   const app = express();
