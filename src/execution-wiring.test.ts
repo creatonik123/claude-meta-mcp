@@ -64,7 +64,7 @@ function fakeGuardDeps(config: GuardConfig, audits: AuditEntry[]): { guardDeps: 
         entityAccountId: async () => "act_1133075730765139",
         currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
         realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
-        accountActiveDailyBudgetTotal: async () => 1000,
+        accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: 100 }),
       },
     },
     audit: { write: async (e: AuditEntry) => { audits.push(e); } },
@@ -417,6 +417,32 @@ test("account locks are built with the dedicated 900s lease and a FRESH holder p
   assert.ok(made[1].holder.startsWith(`${made[0].holder}:albk:`));
   assert.ok(made[2].holder.startsWith(`${made[0].holder}:albk:`));
   assert.notEqual(made[1].holder, made[2].holder);
+});
+
+test("the composed dedupe key is prefixed with TODAY in the ACCOUNT timezone (pinned end-to-end)", async () => {
+  // The dayScoped marker alone cannot catch a frozen or wrong-timezone day
+  // function at the composition site — only observing the real key can.
+  const keys: string[] = [];
+  const spy: typeof createDbCoordinator = () => ({
+    acquire: async () => true,
+    release: async () => {},
+    alreadyApplied: async (k: string) => { keys.push(k); return false; },
+    markApplied: async (k: string) => { keys.push(k); },
+  });
+  const cfg = offConfig();
+  const built = buildExecutionDeps({ DATABASE_URL: "postgres://u:p@h/db" }, fakeClient, cfg, spy);
+  await built.doerDeps.coordinator.alreadyApplied("pause:as_1:body");
+  await built.doerDeps.coordinator.markApplied("pause:as_1:body");
+
+  // Expected day computed INDEPENDENTLY in the config's tz — a hardcoded day
+  // ("1970-01-01") or a UTC day at the composition site must fail here.
+  const expectedDay = new Intl.DateTimeFormat("en-CA", {
+    timeZone: cfg.accountTimezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  assert.deepEqual(keys, [`${expectedDay}:pause:as_1:body`, `${expectedDay}:pause:as_1:body`]);
 });
 
 test("a malformed entityId is refused by the guard, not thrown", async () => {

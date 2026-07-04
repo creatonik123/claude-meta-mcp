@@ -26,7 +26,6 @@ const baseConfig: GuardConfig = {
     dailyAud: 340,
     monthlyAud: 9250,
     sameDayDecisionFractionOfDailyCap: 0.8, // same-day decision limit = 272
-    spendSnapshotMaxAgeMinutes: 60,
     monthEndRevisionBufferAud: 300,
   },
   targets: { targetCplAud: 21.5, provisional: true },
@@ -61,7 +60,7 @@ function makeDeps(o: DeepOverrides = {}): GuardDeps {
       entityAccountId: async () => "act_1133075730765139",
       currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
       realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
-      accountActiveDailyBudgetTotal: async () => 1000, // matches accountStartOfDayTotal: no headroom consumed yet
+      accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: 100 }), // total matches accountStartOfDayTotal (no headroom consumed); target counted at its live 100
       ...(o.meta ?? {}),
     },
   };
@@ -167,6 +166,13 @@ test("budget with smuggled status field -> refuse", async () => {
   expectRefuse(d, "args_extra");
 });
 
+test("budget zero or negative -> refuse (positivity is the only barrier: 0 skips every ceiling)", async () => {
+  const zero = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 0 }, makeDeps());
+  expectRefuse(zero, "args_budget");
+  const neg = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: -5 }, makeDeps());
+  expectRefuse(neg, "args_budget");
+});
+
 test("budget non-integer -> refuse", async () => {
   const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 110.5 }, makeDeps());
   expectRefuse(d, "args_budget");
@@ -188,7 +194,10 @@ test("account aggregate >+20%/day -> refuse", async () => {
   // one big ad set IS the whole account: baseline 1000, account SoD 1000, request 1300 -> clamp 1250 -> +25% of account -> over +20%
   const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 1300 }, makeDeps({
     db: { startOfDayBudget: async () => 1000, accountStartOfDayTotal: async () => 1000 },
-    meta: { currentBudget: async () => ({ dailyBudget: 1000, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }) },
+    meta: {
+      currentBudget: async () => ({ dailyBudget: 1000, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
+      accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: 1000 }),
+    },
   }));
   expectRefuse(d, "account_cap");
 });
@@ -199,7 +208,7 @@ test("increase refused when earlier same-day increases already consumed the acco
   // live total 1195. This entity: baseline+current 100, requesting 110 (well within
   // its own +25%) -> projected live total 1205 >= 1200 -> refuse.
   const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
-    meta: { accountActiveDailyBudgetTotal: async () => 1195 },
+    meta: { accountActiveDailyBudgetTotal: async () => ({ total: 1195, entityCounted: 100 }) },
   }));
   expectRefuse(d, "account_cap");
 });
@@ -218,9 +227,28 @@ test("live account total null -> refuse (fail-closed)", async () => {
   expectRefuse(d, "acct_live_missing");
 });
 
+// ---- the projection swap uses the entity's contribution from the SAME walk ----
+test("account cap: entity paused mid-decision (absent from the live walk) still projects fully — no phantom headroom", async () => {
+  // SoD total 1000 (ceiling 1200). Live walk total 1080 WITHOUT the target (a
+  // human paused it between the entity read and the walk): entityCounted 0.
+  // Request 125 -> projected 1080 - 0 + 125 = 1205 >= 1200 -> refuse.
+  // Subtracting the stale entity read (100) would yield 1105 and allow it.
+  const d = await evaluate("adjust_adset_budget", budget(125), makeDeps({
+    meta: { accountActiveDailyBudgetTotal: async () => ({ total: 1080, entityCounted: 0 }) },
+  }));
+  expectRefuse(d, "account_cap");
+});
+
+test("account cap: malformed live walk (entityCounted above total) -> refuse (fail-closed)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
+    meta: { accountActiveDailyBudgetTotal: async () => ({ total: 100, entityCounted: 200 }) },
+  }));
+  expectRefuse(d, "acct_live_missing");
+});
+
 test("a DECREASE is never blocked by the account cap, even with a huge live total", async () => {
   const d = await evaluate("adjust_adset_budget", budget(90), makeDeps({
-    meta: { accountActiveDailyBudgetTotal: async () => 999999 },
+    meta: { accountActiveDailyBudgetTotal: async () => ({ total: 999999, entityCounted: 100 }) },
   }));
   expectAllow(d);
   assert.equal(d.effectiveArgs.dailyBudget, 90);
@@ -235,7 +263,7 @@ test("restore-raise (at the SoD baseline but above the live budget) still faces 
   const d = await evaluate("adjust_adset_budget", budget(100), makeDeps({
     meta: {
       currentBudget: async () => ({ dailyBudget: 10, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
-      accountActiveDailyBudgetTotal: async () => 1150,
+      accountActiveDailyBudgetTotal: async () => ({ total: 1150, entityCounted: 10 }),
     },
   }));
   expectRefuse(d, "account_cap");
@@ -255,7 +283,7 @@ test("a true decrease vs the LIVE budget skips the account/spend ceilings", asyn
   // current 100, request 90: lowers live capacity even though other totals are hot
   const d = await evaluate("adjust_adset_budget", budget(90), makeDeps({
     meta: {
-      accountActiveDailyBudgetTotal: async () => 999999,
+      accountActiveDailyBudgetTotal: async () => ({ total: 999999, entityCounted: 100 }),
       realisedSpend: async () => ({ today: 339, monthToDate: 9200, dateStop: "2026-06-14", complete: true }),
     },
   }));
@@ -285,7 +313,7 @@ test("a live DECREASE above the frozen baseline skips account/spend ceilings (wa
   const d = await evaluate("adjust_adset_budget", budget(120), makeDeps({
     meta: {
       currentBudget: async () => ({ dailyBudget: 150, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
-      accountActiveDailyBudgetTotal: async () => 1500,
+      accountActiveDailyBudgetTotal: async () => ({ total: 1500, entityCounted: 150 }),
       realisedSpend: async () => ({ today: 339, monthToDate: 9200, dateStop: "2026-06-14", complete: true }),
     },
   }));
@@ -294,12 +322,13 @@ test("a live DECREASE above the frozen baseline skips account/spend ceilings (wa
 });
 
 // ---- pins the `- entityCurrent` swap in the projection (allow-case) ----
-test("account-cap projection swaps the entity's live budget for the clamped value", async () => {
-  // live total 1150 INCLUDES this entity at 100; raising to 110 projects
-  // 1150 - 100 + 110 = 1160 < 1200 -> ALLOW. (Double-counting the entity —
-  // dropping the subtraction — would project 1260 and wrongly refuse.)
+test("account-cap projection swaps the entity's walk-counted budget for the clamped value", async () => {
+  // live total 1150 INCLUDES this entity at 100 (entityCounted from the same
+  // walk); raising to 110 projects 1150 - 100 + 110 = 1160 < 1200 -> ALLOW.
+  // (Double-counting the entity — dropping the subtraction — would project
+  // 1260 and wrongly refuse.)
   const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({
-    meta: { accountActiveDailyBudgetTotal: async () => 1150 },
+    meta: { accountActiveDailyBudgetTotal: async () => ({ total: 1150, entityCounted: 100 }) },
   }));
   expectAllow(d);
   assert.equal(d.effectiveArgs.dailyBudget, 110);
@@ -309,6 +338,23 @@ test("account-cap projection swaps the entity's live budget for the clamped valu
 test("clamped increase still over same-day spend limit -> REFUSE (not proceed)", async () => {
   const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({ meta: { realisedSpend: async () => ({ today: 280, monthToDate: 2000, dateStop: "2026-06-14", complete: true }) } }));
   expectRefuse(d, "daily_spend_cap");
+});
+
+test("daily spend cap refuses EXACTLY at the same-day decision limit (inclusive boundary)", async () => {
+  // dailyAud 340 x fraction 0.8 = 272. At exactly 272 the >= must refuse; a
+  // '>' regression would let the boundary case through.
+  const at = await evaluate("adjust_adset_budget", budget(110), makeDeps({ meta: { realisedSpend: async () => ({ today: 272, monthToDate: 2000, dateStop: "2026-06-14", complete: true }) } }));
+  expectRefuse(at, "daily_spend_cap");
+  const under = await evaluate("adjust_adset_budget", budget(110), makeDeps({ meta: { realisedSpend: async () => ({ today: 271.99, monthToDate: 2000, dateStop: "2026-06-14", complete: true }) } }));
+  expectAllow(under);
+});
+
+test("monthly spend cap refuses EXACTLY at the cap minus the revision buffer (inclusive boundary)", async () => {
+  // monthlyAud 9250 - buffer 300 = 8950. At exactly 8950 the >= must refuse.
+  const at = await evaluate("adjust_adset_budget", budget(110), makeDeps({ meta: { realisedSpend: async () => ({ today: 50, monthToDate: 8950, dateStop: "2026-06-14", complete: true }) } }));
+  expectRefuse(at, "monthly_spend_cap");
+  const under = await evaluate("adjust_adset_budget", budget(110), makeDeps({ meta: { realisedSpend: async () => ({ today: 50, monthToDate: 8949.99, dateStop: "2026-06-14", complete: true }) } }));
+  expectAllow(under);
 });
 
 test("empty/partial spend page -> refuse (treat as unknown, not zero)", async () => {
@@ -398,7 +444,40 @@ test("cross-day creep does NOT block pulling a runaway budget DOWN", async () =>
   assert.equal(d.effectiveArgs.dailyBudget, 100);
 });
 
-test("a FAILING 30d-baseline read does not block a decrease (read runs only for increases)", async () => {
+// The lower-then-restore hole: a value at/below the frozen SoD baseline can
+// still RAISE live capacity and must face the creep ceiling.
+test("restore after a human mid-day cut is creep-checked (cannot re-raise above the ceiling)", async () => {
+  // SoD 150, human cut live to 60, 30d baseline 50 -> ceiling 100. Restoring
+  // 150 raises live capacity 60 -> 150 and must refuse, even though 150 does
+  // not exceed the frozen SoD baseline.
+  const d = await evaluate("adjust_adset_budget", budget(150), makeDeps({
+    db: { startOfDayBudget: async () => 150, budgetBaseline30d: async () => 50 },
+    meta: { currentBudget: async () => ({ dailyBudget: 60, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }) },
+  }));
+  expectRefuse(d, "cross_day_creep");
+});
+
+test("a live walk-DOWN to a value above the creep ceiling is allowed (reducing spend is never blocked)", async () => {
+  // SoD 100, human raised live to 150, 30d baseline 55 -> ceiling 110. Walking
+  // down to 115 lowers live capacity, so the ceiling must not fire.
+  const d = await evaluate("adjust_adset_budget", budget(115), makeDeps({
+    db: { budgetBaseline30d: async () => 55 },
+    meta: { currentBudget: async () => ({ dailyBudget: 150, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }) },
+  }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 115);
+});
+
+test("the 30d-baseline read is NOT made for a walk-down above the SoD baseline (a DB blip cannot block it)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(115), makeDeps({
+    db: { budgetBaseline30d: async () => { throw new Error("db blip"); } },
+    meta: { currentBudget: async () => ({ dailyBudget: 150, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }) },
+  }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 115);
+});
+
+test("a FAILING 30d-baseline read does not block a decrease (read runs only when live capacity rises)", async () => {
   const d = await evaluate("adjust_adset_budget", budget(90), makeDeps({
     db: { budgetBaseline30d: async () => { throw new Error("db blip"); } },
   }));
@@ -451,7 +530,10 @@ test("account aggregate exactly at +20% -> refuse (inclusive boundary)", async (
   // baseline 1000, account SoD 1000, request 1200 -> clamp to 1250 cap but +20% is the account limit; projected 1000-1000+min(1200,1250)=1200 == +20% -> refuse
   const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 1200 }, makeDeps({
     db: { startOfDayBudget: async () => 1000, accountStartOfDayTotal: async () => 1000, budgetBaseline30d: async () => 100000 },
-    meta: { currentBudget: async () => ({ dailyBudget: 1000, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }) },
+    meta: {
+      currentBudget: async () => ({ dailyBudget: 1000, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
+      accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: 1000 }),
+    },
   }));
   expectRefuse(d, "account_cap");
 });

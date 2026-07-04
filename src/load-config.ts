@@ -49,7 +49,6 @@ const ConfigSchema = z
         dailyAud: z.number().positive(),
         monthlyAud: z.number().positive(),
         sameDayDecisionFractionOfDailyCap: z.number().positive(),
-        spendSnapshotMaxAgeMinutes: z.number().positive(),
         monthEndRevisionBufferAud: z.number().nonnegative(),
       })
       .strict(),

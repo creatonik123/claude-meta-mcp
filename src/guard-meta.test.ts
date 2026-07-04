@@ -99,7 +99,7 @@ test("accountActiveDailyBudgetTotal sums ONLY ACTIVE ad sets that own a daily bu
     ACCT,
     100
   );
-  assert.equal(await m.accountActiveDailyBudgetTotal(), 150);
+  assert.deepEqual(await m.accountActiveDailyBudgetTotal("as_absent"), { total: 150, entityCounted: 0 });
 });
 
 test("accountActiveDailyBudgetTotal follows pagination and sums across pages", async () => {
@@ -114,24 +114,24 @@ test("accountActiveDailyBudgetTotal follows pagination and sums across pages", a
     async post() { throw new Error("guard-meta must never POST"); },
   };
   const m = createGuardMeta(client, ACCT, 100);
-  assert.equal(await m.accountActiveDailyBudgetTotal(), 300);
+  assert.deepEqual(await m.accountActiveDailyBudgetTotal("as_absent"), { total: 300, entityCounted: 0 });
   assert.equal(call, 2);
 });
 
 test("accountActiveDailyBudgetTotal returns null on a malformed page or malformed budget (never a partial sum)", async () => {
   const noData = createGuardMeta(fakeClient({ [`/${ACCT}/adsets`]: {} }), ACCT, 100);
-  assert.equal(await noData.accountActiveDailyBudgetTotal(), null);
+  assert.equal(await noData.accountActiveDailyBudgetTotal("as_x"), null);
   const badBudget = createGuardMeta(
     fakeClient({ [`/${ACCT}/adsets`]: { data: [{ daily_budget: "abc", effective_status: "ACTIVE" }] } }),
     ACCT,
     100
   );
-  assert.equal(await badBudget.accountActiveDailyBudgetTotal(), null);
+  assert.equal(await badBudget.accountActiveDailyBudgetTotal("as_x"), null);
 });
 
 test("accountActiveDailyBudgetTotal returns 0 when no ACTIVE ad set owns a budget (guard refuses on non-positive)", async () => {
   const m = createGuardMeta(fakeClient({ [`/${ACCT}/adsets`]: { data: [{ daily_budget: "5000", effective_status: "PAUSED" }] } }), ACCT, 100);
-  assert.equal(await m.accountActiveDailyBudgetTotal(), 0);
+  assert.deepEqual(await m.accountActiveDailyBudgetTotal("as_x"), { total: 0, entityCounted: 0 });
 });
 
 test("accountActiveDailyBudgetTotal fails closed (null) when next exists but the after cursor is unusable", async () => {
@@ -143,7 +143,7 @@ test("accountActiveDailyBudgetTotal fails closed (null) when next exists but the
       async get() { return page as never; },
       async post() { throw new Error("guard-meta must never POST"); },
     };
-    assert.equal(await createGuardMeta(client, ACCT, 100).accountActiveDailyBudgetTotal(), null);
+    assert.equal(await createGuardMeta(client, ACCT, 100).accountActiveDailyBudgetTotal("as_x"), null);
   }
 });
 
@@ -162,7 +162,39 @@ test("accountActiveDailyBudgetTotal counts transitional/unrecognized statuses (o
     ACCT,
     100
   );
-  assert.equal(await m.accountActiveDailyBudgetTotal(), 170);
+  assert.deepEqual(await m.accountActiveDailyBudgetTotal("as_x"), { total: 170, entityCounted: 0 });
+});
+
+test("accountActiveDailyBudgetTotal fails closed (null) on a NEGATIVE daily_budget row (never shrinks the total)", async () => {
+  const m = createGuardMeta(
+    fakeClient({
+      [`/${ACCT}/adsets`]: {
+        data: [
+          { daily_budget: "10000", effective_status: "ACTIVE" },
+          { daily_budget: "-5000", effective_status: "ACTIVE" }, // malformed: must poison the read
+        ],
+      },
+    }),
+    ACCT,
+    100
+  );
+  assert.equal(await m.accountActiveDailyBudgetTotal("as_x"), null);
+});
+
+test("accountActiveDailyBudgetTotal fails closed (null) when pagination exhausts the page cap (never a partial sum)", async () => {
+  // every page reports another page exists; after 10 pages the walk must give
+  // up as UNKNOWN, not return the 10-page partial sum
+  let calls = 0;
+  const client = {
+    async get() {
+      calls++;
+      return { data: [{ daily_budget: "10000", effective_status: "ACTIVE" }], paging: { next: "n", cursors: { after: `c${calls}` } } } as never;
+    },
+    async post() { throw new Error("guard-meta must never POST"); },
+  };
+  const m = createGuardMeta(client, ACCT, 100);
+  assert.equal(await m.accountActiveDailyBudgetTotal("as_x"), null);
+  assert.equal(calls, 10); // stopped at the cap, did not loop forever
 });
 
 test("accountActiveDailyBudgetTotal fails closed (null) when a row's status is missing", async () => {
@@ -171,7 +203,39 @@ test("accountActiveDailyBudgetTotal fails closed (null) when a row's status is m
     ACCT,
     100
   );
-  assert.equal(await m.accountActiveDailyBudgetTotal(), null);
+  assert.equal(await m.accountActiveDailyBudgetTotal("as_x"), null);
+});
+
+test("accountActiveDailyBudgetTotal reports the target entity's contribution from the SAME walk", async () => {
+  const m = createGuardMeta(
+    fakeClient({
+      [`/${ACCT}/adsets`]: {
+        data: [
+          { id: "as_target", daily_budget: "10000", effective_status: "ACTIVE" }, // 100 (the target)
+          { id: "as_other", daily_budget: "5000", effective_status: "ACTIVE" }, // 50
+        ],
+      },
+    }),
+    ACCT,
+    100
+  );
+  assert.deepEqual(await m.accountActiveDailyBudgetTotal("as_target"), { total: 150, entityCounted: 100 });
+});
+
+test("accountActiveDailyBudgetTotal reports entityCounted 0 when the target was skipped (e.g. paused mid-decision)", async () => {
+  const m = createGuardMeta(
+    fakeClient({
+      [`/${ACCT}/adsets`]: {
+        data: [
+          { id: "as_target", daily_budget: "10000", effective_status: "PAUSED" }, // idle -> skipped
+          { id: "as_other", daily_budget: "5000", effective_status: "ACTIVE" }, // 50
+        ],
+      },
+    }),
+    ACCT,
+    100
+  );
+  assert.deepEqual(await m.accountActiveDailyBudgetTotal("as_target"), { total: 50, entityCounted: 0 });
 });
 
 test("currentBudget surfaces effective_status; missing -> null (guard refuses budget writes)", async () => {

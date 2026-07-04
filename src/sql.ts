@@ -13,7 +13,17 @@ export function createNeonSql(connectionString: string | undefined): Sql {
       "createNeonSql: connection string is missing — refusing to construct a live DB client (fail-closed)"
     );
   }
-  const client = neon(connectionString);
+  // The driver's own "not a valid URL" error echoes the full connection string
+  // (credentials included) into whatever catches it — e.g. the fatal boot log.
+  // Catch and rethrow with the value redacted; never let the secret escape.
+  let client: ReturnType<typeof neon>;
+  try {
+    client = neon(connectionString);
+  } catch {
+    throw new Error(
+      "createNeonSql: connection string is not a valid Postgres URL (value redacted) — refusing to construct a live DB client (fail-closed)"
+    );
+  }
   return async (text: string, params: unknown[] = []): Promise<Record<string, unknown>[]> => {
     const rows = await client.query(text, params);
     return rows as Record<string, unknown>[];

@@ -21,7 +21,6 @@ const baseConfig: GuardConfig = {
     dailyAud: 340,
     monthlyAud: 9250,
     sameDayDecisionFractionOfDailyCap: 0.8,
-    spendSnapshotMaxAgeMinutes: 60,
     monthEndRevisionBufferAud: 300,
   },
   targets: { targetCplAud: 21.5, provisional: true },
@@ -48,7 +47,7 @@ function makeDeps(modeOff = false): GuardDeps {
       entityAccountId: async () => "act_1133075730765139",
       currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
       realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
-      accountActiveDailyBudgetTotal: async () => 1000,
+      accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: 100 }),
     },
   };
 }

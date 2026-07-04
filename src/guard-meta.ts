@@ -58,18 +58,22 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
     // MISSING status returns null (the guard refuses); only statuses known to
     // be idle are excluded; any unrecognized status is COUNTED (overcounting
     // raises the projection, which tightens the cap — the safe direction).
+    // entityCounted is the target entity's contribution INSIDE this same walk
+    // (0 if it was skipped or absent), so the guard's projection swap can never
+    // race a concurrent status change against a separate read of the entity.
     // Never returns a partial sum. Page cap sized generously above the
     // account's real ad-set count but small enough to bound the guard's
     // worst-case read time (the account write-lock lease must outlast it).
-    async accountActiveDailyBudgetTotal(): Promise<number | null> {
+    async accountActiveDailyBudgetTotal(entityId: string): Promise<{ total: number; entityCounted: number } | null> {
       let after: string | undefined;
       let total = 0;
+      let entityCounted = 0;
       for (let page = 0; page < 10; page++) {
         const r = await client.get<{
           data?: Array<Record<string, unknown>>;
           paging?: { next?: string; cursors?: { after?: string } };
         }>(`/${accountId}/adsets`, {
-          fields: "daily_budget,effective_status",
+          fields: "id,daily_budget,effective_status",
           limit: 200,
           ...(after ? { after } : {}),
         });
@@ -82,8 +86,9 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
           const major = toMajor(row.daily_budget);
           if (major === null || major < 0) return null; // malformed budget = unknown
           total += major;
+          if (row?.id === entityId) entityCounted += major;
         }
-        if (!r.paging?.next) return total; // no more pages — the sum is complete
+        if (!r.paging?.next) return { total, entityCounted }; // no more pages — the sum is complete
         const nextAfter = r.paging?.cursors?.after;
         if (typeof nextAfter !== "string" || nextAfter === "") {
           return null; // more data exists but no usable cursor — NEVER a partial sum
