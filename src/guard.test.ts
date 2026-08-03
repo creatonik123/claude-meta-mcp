@@ -11,6 +11,7 @@ import {
 // ---- base config (all action modes 'auto' so we can exercise later checks) ----
 const baseConfig: GuardConfig = {
   managedAccountId: "act_1133075730765139",
+  allowedCampaignIds: ["120200123"],
   deniedAccountIds: ["act_2218833115522041"],
   actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
   accountTimezone: "Australia/Sydney",
@@ -58,6 +59,7 @@ function makeDeps(o: DeepOverrides = {}): GuardDeps {
     },
     meta: {
       entityAccountId: async () => "act_1133075730765139",
+      entityCampaignId: async () => "120200123",
       currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
       realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
       accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: 100 }), // total matches accountStartOfDayTotal (no headroom consumed); target counted at its live 100
@@ -96,9 +98,13 @@ test("pause: valid -> allowed", async () => {
   assert.equal(d.effectiveArgs.status, "PAUSED");
 });
 
-test("publish: valid unconsumed approval -> allowed", async () => {
+// A valid unconsumed approval clears the approval checks but is NOT sufficient on its own: the
+// campaign-scope gate is the last word, and a publish target cannot be proven in scope (see the
+// publish branch). Asserting the reason proves the approval logic still ran and passed — a regression
+// that broke it would surface as approval_missing / approval_consumed / approval_unreadable instead.
+test("publish: valid unconsumed approval clears approval checks, then campaign scope refuses", async () => {
   const d = await evaluate("publish_approved_creative", { approvalHash: "abc" }, makeDeps());
-  expectAllow(d);
+  expectRefuse(d, "campaign_scope_unverifiable");
 });
 
 // ---- kill switch ----
@@ -599,4 +605,61 @@ test("budget baseline + spend use the ACCOUNT-tz day, not UTC", async () => {
 test("invalid account timezone fails closed (budget)", async () => {
   const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({ config: { accountTimezone: "Mars/Phobos" } }));
   expectRefuse(d, "tz_invalid");
+});
+
+// ---- campaign scope (isolation: a trial runs on ONE campaign; the rest of the account is untouchable) ----
+test("campaign scope: entity in an allowed campaign -> allowed", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ meta: { entityCampaignId: async () => "120200123" } }));
+  assert.equal(d.allowed, true);
+});
+
+test("campaign scope: entity in ANOTHER campaign -> refuse", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ meta: { entityCampaignId: async () => "120200999" } }));
+  expectRefuse(d, "campaign_scope_mismatch");
+});
+
+test("campaign scope: budget writes are scoped too, not just pause", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({ meta: { entityCampaignId: async () => "120200999" } }));
+  expectRefuse(d, "campaign_scope_mismatch");
+});
+
+test("campaign scope: empty allowlist -> refuse every entity write (shipping default)", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ config: { allowedCampaignIds: [] } }));
+  expectRefuse(d, "campaign_scope_unset");
+});
+
+test("campaign scope: allowlist absent -> refuse (misconfiguration never opens the account)", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ config: { allowedCampaignIds: undefined } }));
+  expectRefuse(d, "campaign_scope_unset");
+});
+
+test("campaign scope: unresolvable campaign -> refuse (fail-closed)", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ meta: { entityCampaignId: async () => null } }));
+  expectRefuse(d, "campaign_scope_unknown");
+});
+
+test("campaign scope: campaign lookup throws -> refuse (fail-closed)", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ meta: { entityCampaignId: async () => { throw new Error("graph down"); } } }));
+  expectRefuse(d, "campaign_unreadable");
+});
+
+test("campaign scope: exact id match only — a neighbouring id does not pass", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ meta: { entityCampaignId: async () => "12020012" } }));
+  expectRefuse(d, "campaign_scope_mismatch");
+});
+
+test("campaign scope: the SHIPPED config allows no campaign (nothing writable until a reviewed PR)", async () => {
+  const shipped = (await import("./load-config.ts")).loadGuardConfig();
+  assert.deepEqual(shipped.allowedCampaignIds, []);
+});
+
+// ---- publish is campaign-scoped too: its target cannot be proven in scope, so it fails closed ----
+test("publish: refused while campaign isolation is in force (target campaign unverifiable)", async () => {
+  const d = await evaluate("publish_approved_creative", { approvalHash: "abc" }, makeDeps());
+  expectRefuse(d, "campaign_scope_unverifiable");
+});
+
+test("publish: an unconsumed approval is NOT sufficient to bypass campaign scope", async () => {
+  const d = await evaluate("publish_approved_creative", { approvalHash: "abc" }, makeDeps({ db: { approvalByHash: async () => ({ consumed: false }) } }));
+  assert.equal(d.allowed, false);
 });

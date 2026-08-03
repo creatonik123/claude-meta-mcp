@@ -6,6 +6,7 @@ import type { AuditEntry, AuditSink } from "./audit.ts";
 
 const baseConfig: GuardConfig = {
   managedAccountId: "act_1133075730765139",
+  allowedCampaignIds: ["120200123"],
   deniedAccountIds: ["act_2218833115522041"],
   accountTimezone: "Australia/Sydney",
   actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
@@ -45,6 +46,7 @@ function makeDeps(modeOff = false): GuardDeps {
     },
     meta: {
       entityAccountId: async () => "act_1133075730765139",
+      entityCampaignId: async () => "120200123",
       currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
       realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
       accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: 100 }),

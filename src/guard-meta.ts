@@ -34,6 +34,19 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
       return typeof id === "string" && id !== "" ? id : null;
     },
 
+    // Owning campaign, resolved from Meta (never from our own DB) for the campaign-scope guardrail.
+    // An ad/ad set carries campaign_id; a campaign returns its own id. null when unreadable/absent so
+    // the guard fails closed.
+    async entityCampaignId(entityId) {
+      const r = await client.get<Record<string, unknown>>(`/${entityId}`, { fields: "campaign_id,id" });
+      const cid = r?.campaign_id;
+      if (typeof cid === "string" && cid !== "") return cid;
+      // A campaign object has no campaign_id field; its own id is the campaign.
+      const own = r?.id;
+      if (typeof own === "string" && own !== "" && String(own) === String(entityId)) return own;
+      return null;
+    },
+
     async currentBudget(entityId): Promise<CurrentBudget | null> {
       const r = await client.get<Record<string, unknown>>(`/${entityId}`, {
         fields: "daily_budget,lifetime_budget,effective_status,campaign{daily_budget,lifetime_budget}",

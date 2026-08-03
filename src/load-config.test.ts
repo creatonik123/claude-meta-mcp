@@ -33,3 +33,15 @@ test("assertShipInvariants throws if the forbidden account is removed from the d
   const tampered = { ...c, deniedAccountIds: c.deniedAccountIds.filter((a) => a !== "act_2218833115522041") };
   assert.throws(() => assertShipInvariants(tampered), /deniedAccountIds/);
 });
+
+test("ship invariant: the allowlist may not exceed ONE campaign (the trial is a single campaign)", async () => {
+  const { assertShipInvariants, loadGuardConfig } = await import("./load-config.ts");
+  const base = loadGuardConfig();
+  assert.throws(
+    () => assertShipInvariants({ ...base, allowedCampaignIds: ["120200123", "120200999"] }),
+    /allowedCampaignIds/
+  );
+  // zero (shipped) and exactly one are both acceptable
+  assertShipInvariants({ ...base, allowedCampaignIds: [] });
+  assertShipInvariants({ ...base, allowedCampaignIds: ["120200123"] });
+});

@@ -43,7 +43,8 @@ function offConfig(): GuardConfig {
 
 function autoConfig(): GuardConfig {
   const c = offConfig();
-  return { ...c, actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" } };
+  // in-scope campaign so these tests exercise the doer/lock/schema paths, not campaign scope
+  return { ...c, allowedCampaignIds: ["120200123"], actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" } };
 }
 
 function fakeGuardDeps(config: GuardConfig, audits: AuditEntry[]): { guardDeps: GuardDeps; audit: { write: (e: AuditEntry) => Promise<void> } } {
@@ -62,6 +63,7 @@ function fakeGuardDeps(config: GuardConfig, audits: AuditEntry[]): { guardDeps: 
       },
       meta: {
         entityAccountId: async () => "act_1133075730765139",
+        entityCampaignId: async () => "120200123",
         currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
         realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
         accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: 100 }),

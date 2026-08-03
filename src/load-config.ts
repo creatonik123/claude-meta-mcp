@@ -25,6 +25,8 @@ const ConfigSchema = z
   .object({
     managedAccountId: z.string().min(1),
     deniedAccountIds: z.array(z.string()),
+    // Campaign isolation for writes; absent/empty = refuse all entity writes (fail-closed).
+    allowedCampaignIds: z.array(z.string()).optional(),
     currency: z.string().optional(),
     accountTimezone: z.string().min(1).refine(isIanaTimeZone, { message: "accountTimezone must be a valid IANA timezone" }),
     actionModes: z
@@ -85,5 +87,13 @@ export function assertShipInvariants(config: GuardConfig): void {
   }
   if (!config.deniedAccountIds.includes(FORBIDDEN_ACCOUNT)) {
     throw new Error(`ship invariant violated: ${FORBIDDEN_ACCOUNT} missing from deniedAccountIds`);
+  }
+  // The trial is ONE campaign: bound the allowlist so the config can never quietly widen to the
+  // whole account. Zero (shipped) or exactly one is acceptable; more must be a deliberate code change.
+  const camps = config.allowedCampaignIds;
+  if (Array.isArray(camps) && camps.length > 1) {
+    throw new Error(
+      `ship invariant violated: allowedCampaignIds must hold at most one campaign (got ${camps.length})`
+    );
   }
 }

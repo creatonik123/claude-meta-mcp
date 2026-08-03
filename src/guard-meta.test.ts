@@ -260,3 +260,37 @@ test("KNOWN_IDLE_STATUSES membership is pinned exactly — widening it would loo
     ["ADSET_PAUSED", "ARCHIVED", "CAMPAIGN_PAUSED", "DELETED", "DISAPPROVED", "PAUSED"]
   );
 });
+
+// ---- entityCampaignId: the single Meta-side basis of campaign isolation ----
+test("entityCampaignId returns the owning campaign of an ad/ad set", async () => {
+  const m = createGuardMeta(fakeClient({ "/23890": { campaign_id: "120200123", id: "23890" } }), ACCT, 100);
+  assert.equal(await m.entityCampaignId("23890"), "120200123");
+});
+
+test("entityCampaignId treats a campaign object as its own campaign", async () => {
+  const m = createGuardMeta(fakeClient({ "/120200123": { id: "120200123" } }), ACCT, 100);
+  assert.equal(await m.entityCampaignId("120200123"), "120200123");
+});
+
+test("entityCampaignId returns null when campaign_id is absent and the id is a DIFFERENT entity", async () => {
+  // Graph returned some other object's id — must NOT be mistaken for the campaign.
+  const m = createGuardMeta(fakeClient({ "/23890": { id: "99999" } }), ACCT, 100);
+  assert.equal(await m.entityCampaignId("23890"), null);
+});
+
+test("entityCampaignId returns null on an empty/absent response (guard then fails closed)", async () => {
+  const m = createGuardMeta(fakeClient({ "/23890": {} }), ACCT, 100);
+  assert.equal(await m.entityCampaignId("23890"), null);
+});
+
+test("entityCampaignId ignores a non-string campaign_id (never coerces junk into scope)", async () => {
+  const m = createGuardMeta(fakeClient({ "/23890": { campaign_id: 120200123 } }), ACCT, 100);
+  assert.equal(await m.entityCampaignId("23890"), null);
+});
+
+test("entityCampaignId requests the campaign_id field and never POSTs", async () => {
+  const c = fakeClient({ "/23890": { campaign_id: "120200123" } });
+  await createGuardMeta(c, ACCT, 100).entityCampaignId("23890");
+  assert.equal(c.gets[0].path, "/23890");
+  assert.match(JSON.stringify(c.gets[0].params), /campaign_id/);
+});
