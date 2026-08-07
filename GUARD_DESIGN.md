@@ -182,8 +182,10 @@ Auto-rollback; server hosting location; the activation story (4th op vs manual);
 bid-cap / cost-cap controls; A/B promotion (R5).
 
 ## 12. Dependencies to raise with the sponsor / Business Manager admin
-- Meta **System User token asset-scoped to only `act_1133075730765139`** (real safety;
-  the code deny-constant alone is insufficient).
+- Meta **System User token asset-scoped to only `act_2218833115522041`** (APS 2026, the managed
+  sandbox account — real safety; the code deny-constant alone is insufficient). DONE: the
+  `adpilot-writer` system user is assigned that account only, and was empirically verified to be
+  denied on `act_1133075730765139`.
 - Request Marketing API **Standard tier** (dev tier rate limits cause `partial` runs).
 - Lower the Meta-side account spending limit nearer A$9,250 as a tighter hard backstop.
 

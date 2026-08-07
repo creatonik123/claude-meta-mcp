@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadGuardConfig, parseGuardConfig, assertShipInvariants } from "./load-config.ts";
+import { loadGuardConfig, parseGuardConfig, assertShipInvariants, FORBIDDEN_ACCOUNT } from "./load-config.ts";
 
 test("the on-disk guard.config.json parses and validates", () => {
   const c = loadGuardConfig();
@@ -32,6 +32,26 @@ test("assertShipInvariants throws if the forbidden account is removed from the d
   const c = loadGuardConfig();
   const tampered = { ...c, deniedAccountIds: c.deniedAccountIds.filter((a) => a !== "act_1133075730765139") };
   assert.throws(() => assertShipInvariants(tampered), /deniedAccountIds/);
+});
+
+// The deny-list check alone cannot see a re-inversion. Point managedAccountId back at production
+// while leaving it in deniedAccountIds and boot still passes — writes then refuse only because
+// guard.ts evaluates the deny check before the mismatch check. That is fail-closed by ordering,
+// not by design, and reordering those two blocks would silently re-open the production account.
+test("assertShipInvariants throws if the managed account is ALSO on the deny list", () => {
+  const c = loadGuardConfig();
+  const tampered = { ...c, deniedAccountIds: [...c.deniedAccountIds, c.managedAccountId] };
+  assert.throws(() => assertShipInvariants(tampered), /managedAccountId/);
+});
+
+test("assertShipInvariants throws if the managed account is the forbidden production account", () => {
+  const c = loadGuardConfig();
+  const tampered = { ...c, managedAccountId: FORBIDDEN_ACCOUNT };
+  assert.throws(() => assertShipInvariants(tampered), /forbidden/i);
+});
+
+test("the shipped timezone is the managed account's own (Australia/North), not Sydney", () => {
+  assert.equal(loadGuardConfig().accountTimezone, "Australia/North");
 });
 
 test("ship invariant: the allowlist may not exceed ONE campaign (the trial is a single campaign)", async () => {

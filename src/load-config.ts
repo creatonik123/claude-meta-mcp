@@ -59,7 +59,8 @@ const ConfigSchema = z
   })
   .strict();
 
-const FORBIDDEN_ACCOUNT = "act_1133075730765139";
+/** The A$157k production account. AdPilot must never manage it and never write to it. */
+export const FORBIDDEN_ACCOUNT = "act_1133075730765139";
 
 /** Validate an already-parsed config object. Throws on anything malformed. */
 export function parseGuardConfig(raw: unknown): GuardConfig {
@@ -87,6 +88,20 @@ export function assertShipInvariants(config: GuardConfig): void {
   }
   if (!config.deniedAccountIds.includes(FORBIDDEN_ACCOUNT)) {
     throw new Error(`ship invariant violated: ${FORBIDDEN_ACCOUNT} missing from deniedAccountIds`);
+  }
+  // Deny-list membership alone cannot detect a re-inversion: swapping managedAccountId back to
+  // production while it stays on the deny list passes every check above, and writes then refuse
+  // only because guard.ts happens to evaluate the deny branch before the account-mismatch branch.
+  // Assert the roles directly so the config, not the branch order, is what keeps production safe.
+  if (config.managedAccountId === FORBIDDEN_ACCOUNT) {
+    throw new Error(
+      `ship invariant violated: managedAccountId is the forbidden production account ${FORBIDDEN_ACCOUNT}`
+    );
+  }
+  if (config.deniedAccountIds.includes(config.managedAccountId)) {
+    throw new Error(
+      `ship invariant violated: managedAccountId ${config.managedAccountId} is also on deniedAccountIds`
+    );
   }
   // The trial is ONE campaign: bound the allowlist so the config can never quietly widen to the
   // whole account. Zero (shipped) or exactly one is acceptable; more must be a deliberate code change.

@@ -8,7 +8,7 @@ const baseConfig: GuardConfig = {
   managedAccountId: "act_2218833115522041",
   allowedCampaignIds: ["120200123"],
   deniedAccountIds: ["act_1133075730765139"],
-  accountTimezone: "Australia/Sydney",
+  accountTimezone: "Australia/North",
   actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
   killSwitchEnvFlag: "ADPILOT_KILL_ALL",
   budgetClamp: {
