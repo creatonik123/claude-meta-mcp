@@ -13,11 +13,11 @@ function fakeClient(byPath: Record<string, Record<string, unknown>>): GraphClien
   };
 }
 
-const ACCT = "act_1133075730765139";
+const ACCT = "act_2218833115522041";
 
 test("entityAccountId returns the entity's account_id", async () => {
-  const m = createGuardMeta(fakeClient({ "/23890": { account_id: "1133075730765139" } }), ACCT, 100);
-  assert.equal(await m.entityAccountId("23890"), "1133075730765139");
+  const m = createGuardMeta(fakeClient({ "/23890": { account_id: "2218833115522041" } }), ACCT, 100);
+  assert.equal(await m.entityAccountId("23890"), "2218833115522041");
 });
 
 test("entityAccountId returns null when absent (fail-closed at the guard)", async () => {

@@ -38,9 +38,16 @@ This is the spec we build to, test-first.
   NOT lock humans to read-only.
 - Security comes from the guard + credential, not from blocking people:
   - **Credential-level scope:** the Meta System User token is asset-scoped to ONLY
-    `act_1133075730765139`; at boot, `GET /me/assigned_ad_accounts` must NOT contain
-    `act_2218833115522041` or the server refuses to start. Code allow/deny constants
-    sit on top. (Dependency: a Business Manager admin creates this token.)
+    `act_2218833115522041` ("APS 2026", the trial account); at boot,
+    `GET /me/assigned_ad_accounts` must NOT contain `act_1133075730765139` (the main
+    production account, ~A$157k of spend) or the server refuses to start. Code
+    allow/deny constants sit on top.
+    **STATUS 2026-08-07:** the token scope is DONE and empirically verified — the
+    credential reaches APS 2026 and is denied on the main account. The boot check
+    described above is **NOT IMPLEMENTED**: `assigned_ad_accounts` appears nowhere in
+    `src/`. Until it is, the credential scope is the only enforcement of this clause.
+    The account roles were inverted on 2026-08-07: the trial account is now managed and
+    the production account is denied, which is the reverse of the original ship state.
   - Bearer compared with `crypto.timingSafeEqual` over equal-length SHA-256 hashes;
     401 rate-limit + alert; `trust proxy` set to the exact hop count (never `true`);
     write endpoint restricted to the engine's egress at the network layer.

@@ -10,9 +10,9 @@ import {
 
 // ---- base config (all action modes 'auto' so we can exercise later checks) ----
 const baseConfig: GuardConfig = {
-  managedAccountId: "act_1133075730765139",
+  managedAccountId: "act_2218833115522041",
   allowedCampaignIds: ["120200123"],
-  deniedAccountIds: ["act_2218833115522041"],
+  deniedAccountIds: ["act_1133075730765139"],
   actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
   accountTimezone: "Australia/Sydney",
   killSwitchEnvFlag: "ADPILOT_KILL_ALL",
@@ -58,7 +58,7 @@ function makeDeps(o: DeepOverrides = {}): GuardDeps {
       ...(o.db ?? {}),
     },
     meta: {
-      entityAccountId: async () => "act_1133075730765139",
+      entityAccountId: async () => "act_2218833115522041",
       entityCampaignId: async () => "120200123",
       currentBudget: async () => ({ dailyBudget: 100, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
       realisedSpend: async () => ({ today: 50, monthToDate: 2000, dateStop: "2026-06-14", complete: true }),
@@ -146,8 +146,8 @@ test("scope: wrong account -> refuse", async () => {
   expectRefuse(d, "scope_mismatch");
 });
 
-test("scope: denied account (APS 2026) -> refuse", async () => {
-  const d = await evaluate("pause", pause(), makeDeps({ meta: { entityAccountId: async () => "act_2218833115522041" } }));
+test("scope: denied account (the main production account) -> refuse", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ meta: { entityAccountId: async () => "act_1133075730765139" } }));
   expectRefuse(d, "scope_denied");
 });
 
@@ -527,7 +527,7 @@ test("publish with malformed approval (consumed undefined) -> refuse", async () 
 
 // ---- publish strict args ----
 test("publish with a smuggled extra field -> refuse args_extra", async () => {
-  const d = await evaluate("publish_approved_creative", { approvalHash: "abc", account_id: "act_2218833115522041" }, makeDeps());
+  const d = await evaluate("publish_approved_creative", { approvalHash: "abc", account_id: "act_1133075730765139" }, makeDeps());
   expectRefuse(d, "args_extra");
 });
 

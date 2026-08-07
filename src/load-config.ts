@@ -59,7 +59,7 @@ const ConfigSchema = z
   })
   .strict();
 
-const FORBIDDEN_ACCOUNT = "act_2218833115522041";
+const FORBIDDEN_ACCOUNT = "act_1133075730765139";
 
 /** Validate an already-parsed config object. Throws on anything malformed. */
 export function parseGuardConfig(raw: unknown): GuardConfig {

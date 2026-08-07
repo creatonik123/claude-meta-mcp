@@ -1,11 +1,11 @@
 {
-  "managedAccountId": "act_1133075730765139",
+  "managedAccountId": "act_2218833115522041",
   "deniedAccountIds": [
-    "act_2218833115522041"
+    "act_1133075730765139"
   ],
   "allowedCampaignIds": [],
   "currency": "AUD",
-  "accountTimezone": "Australia/Sydney",
+  "accountTimezone": "Australia/North",
   "actionModes": {
     "pause": "off",
     "adjust_adset_budget": "off",
@@ -17,7 +17,7 @@
     "maxAccountChangePerDayPct": 20,
     "blockLifetimeBudgetWrites": true,
     "blockCboAdsetBudgetWrites": true,
-    "crossDayMaxMultipleVs30dBaseline": 2.0
+    "crossDayMaxMultipleVs30dBaseline": 2
   },
   "spendCaps": {
     "dailyAud": 340,

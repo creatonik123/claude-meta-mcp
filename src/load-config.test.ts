@@ -4,9 +4,9 @@ import { loadGuardConfig, parseGuardConfig, assertShipInvariants } from "./load-
 
 test("the on-disk guard.config.json parses and validates", () => {
   const c = loadGuardConfig();
-  assert.equal(c.managedAccountId, "act_1133075730765139");
+  assert.equal(c.managedAccountId, "act_2218833115522041");
   assert.equal(c.schemaVersion, 1);
-  assert.ok(c.deniedAccountIds.includes("act_2218833115522041"));
+  assert.ok(c.deniedAccountIds.includes("act_1133075730765139"));
 });
 
 test("the shipped config satisfies the recommend-only ship invariants", () => {
@@ -30,7 +30,7 @@ test("assertShipInvariants throws if any action mode is not 'off'", () => {
 
 test("assertShipInvariants throws if the forbidden account is removed from the deny list", () => {
   const c = loadGuardConfig();
-  const tampered = { ...c, deniedAccountIds: c.deniedAccountIds.filter((a) => a !== "act_2218833115522041") };
+  const tampered = { ...c, deniedAccountIds: c.deniedAccountIds.filter((a) => a !== "act_1133075730765139") };
   assert.throws(() => assertShipInvariants(tampered), /deniedAccountIds/);
 });
 
