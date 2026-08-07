@@ -10,6 +10,7 @@
  * token. Multi-tenant + OAuth 2.1 + DCR is planned for v0.2.
  */
 
+import { pathToFileURL } from "node:url";
 import express, { NextFunction, Request, Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -63,7 +64,21 @@ function bearerAuth(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-async function main(): Promise<void> {
+/**
+ * Build the fully-wired Express app WITHOUT binding a port.
+ *
+ * Split out from `main()` so the identical server can run two ways:
+ *   - as a long-lived process (`npm start`), which calls listen() below, and
+ *   - as a serverless function, which just needs the request handler.
+ *
+ * This is safe precisely because the MCP transport is STATELESS here
+ * (`sessionIdGenerator: undefined`): a fresh transport is created per request
+ * and closed with the response, so nothing is held in memory between calls and
+ * there is no session affinity to lose. Every startup assertion — ship
+ * invariants, the read-only gate, the safe-registration backstop — still runs
+ * before the app is returned, so a cold start fails closed exactly like a boot.
+ */
+export async function createApp(): Promise<express.Express> {
   // Load + validate the guard config and enforce the recommend-only ship
   // state (all action modes 'off', forbidden account on the deny list).
   // A malformed config or an unsafe mode aborts startup (fail closed).
@@ -168,6 +183,11 @@ async function main(): Promise<void> {
     });
   });
 
+  return app;
+}
+
+async function main(): Promise<void> {
+  const app = await createApp();
   app.listen(config.port, () => {
     log("info", "claude-meta-mcp listening", {
       port: config.port,
@@ -178,7 +198,16 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
-  console.error("Fatal startup error:", err);
-  process.exit(1);
-});
+// Only bind a port when this file is executed directly (`npm start`, `npx`).
+// Under a serverless host the module is IMPORTED for its `createApp` export, and
+// starting a listener there would either crash the function or leak a socket.
+const invokedDirectly =
+  typeof process.argv[1] === "string" &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error("Fatal startup error:", err);
+    process.exit(1);
+  });
+}
