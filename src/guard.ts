@@ -66,7 +66,10 @@ export interface GuardConfig {
 export interface GuardDb {
   killSwitchRow(): Promise<boolean | null>; // true=frozen, null=missing/unknown
   schemaVersion(): Promise<number | null>;
-  approvalByHash(hash: string): Promise<{ consumed: boolean } | null>;
+  // targetEntityId: the ad set this approval authorises publishing INTO. Required for publish — the
+  // guard runs it through checkEntityScope so campaign isolation applies to creation too. Optional in
+  // the type only because older rows predate it; an absent value refuses (approval_no_target).
+  approvalByHash(hash: string): Promise<{ consumed: boolean; targetEntityId?: string | null } | null>;
   startOfDayBudget(entityId: string, day: string): Promise<number | null>;
   accountStartOfDayTotal(day: string): Promise<number | null>;
   // Trailing 30-day budget baseline for the cross-day creep ceiling: the 30
@@ -203,42 +206,13 @@ async function evaluateInner(
   const argCheck = validateArgs(action, args);
   if (argCheck) return argCheck;
 
-  // 6. Account scope (entity ops) — resolve the TRUE owner from Meta.
+  // 6. Account + campaign scope (entity ops) — resolve the TRUE owner from Meta.
+  // Extracted so PUBLISH runs the IDENTICAL check on its own target rather than a second copy of it.
+  // A parallel implementation of campaign isolation would drift from this one, and the guard's whole
+  // value is that there is exactly one authority for "may this entity be written to".
   if (action === "pause" || action === "adjust_adset_budget") {
-    const entityId = String(args.entityId);
-    const owner = await failClosed(() => meta.entityAccountId(entityId), "owner_unreadable", "entity owner");
-    if (!owner.ok) return owner.decision;
-    const ownerAcct = canonAccount(owner.value);
-    const allowed = canonAccount(config.managedAccountId);
-    if (ownerAcct === null) {
-      return refuse("scope_unknown", "could not resolve entity's owning account (fail-closed)");
-    }
-    if (config.deniedAccountIds.map(canonAccount).includes(ownerAcct)) {
-      return refuse("scope_denied", `entity belongs to a denied account (${ownerAcct})`);
-    }
-    if (ownerAcct !== allowed) {
-      return refuse("scope_mismatch", `entity belongs to ${ownerAcct}, not the managed account`);
-    }
-
-    // 6b. CAMPAIGN scope — narrower than the account check above, so a trial can run on ONE campaign
-    // while every other campaign in the same account stays untouchable. Fail-closed on an absent or
-    // empty allowlist and on an unreadable campaign: never infer permission from missing information.
-    // This is the AUTHORITY for campaign isolation (resolved from Meta at write time). The app has a
-    // matching advisory pre-filter in app/lib/execution/campaign-scope.js (reasons: campaign_unknown
-    // / campaign_not_allowlisted / no_campaign_allowlist) — that one may be stale; this one may not.
-    const camps = config.allowedCampaignIds;
-    if (!Array.isArray(camps) || camps.length === 0) {
-      return refuse("campaign_scope_unset", "no allowed campaigns configured — entity writes refused");
-    }
-    const camp = await failClosed(() => meta.entityCampaignId(entityId), "campaign_unreadable", "entity campaign");
-    if (!camp.ok) return camp.decision;
-    const campId = camp.value === null || camp.value === undefined ? "" : String(camp.value).trim();
-    if (!campId) {
-      return refuse("campaign_scope_unknown", "could not resolve entity's owning campaign (fail-closed)");
-    }
-    if (!camps.some((c) => String(c).trim() === campId)) {
-      return refuse("campaign_scope_mismatch", `entity belongs to campaign ${campId}, which is not in the allowed set`);
-    }
+    const scoped = await checkEntityScope(String(args.entityId), { config, meta });
+    if (scoped) return scoped;
   }
 
   // 7. Per-action logic.
@@ -262,20 +236,78 @@ async function evaluateInner(
     if (appr.value.consumed !== false) {
       return refuse("approval_consumed", "approval is used or its state is unknown — refused (fail-closed)");
     }
-    // CAMPAIGN SCOPE for publishing — the last gate, never skipped. Publish args carry only an
-    // approvalHash (see validateArgs), so there is no entity here from which to resolve a campaign:
-    // the destination is UNVERIFIABLE. A valid approval alone must never authorise a write whose
-    // target campaign we cannot prove is in scope, so this fails closed. (No production behaviour
-    // changes: guard-db's approvalByHash is deliberately unwired and already refuses earlier.)
-    // To publish under isolation, the approval record must carry its target entity so it can run
-    // through the campaign check in step 6b above.
-    return refuse(
-      "campaign_scope_unverifiable",
-      "publish target campaign cannot be resolved from the approval hash — refused while campaign isolation is in force"
-    );
+    // CAMPAIGN SCOPE for publishing — the last gate, never skipped. The destination comes from the
+    // APPROVAL RECORD, never from args: args are caller-supplied, whereas the approval is the
+    // immutable thing a human signed off. If the caller could name the destination, an approval for
+    // one ad set could be published into another — including a campaign nobody approved. validateArgs
+    // therefore still rejects any arg beyond approvalHash.
+    //
+    // An approval with no target is UNPROVABLE and refuses: a valid approval alone must never
+    // authorise a write whose target campaign we cannot verify.
+    const target = typeof appr.value.targetEntityId === "string" ? appr.value.targetEntityId.trim() : "";
+    if (!target) {
+      return refuse(
+        "approval_no_target",
+        "approval record carries no target entity — publish destination unprovable (fail-closed)"
+      );
+    }
+    // The SAME check pause and budget pass, on the approval's own target.
+    const scoped = await checkEntityScope(target, { config, meta });
+    if (scoped) return scoped;
+
+    // Only the approvalHash reaches the executor. The doer resolves the destination from the same
+    // approval record, so no caller-supplied id can influence where the creative lands.
+    return { allowed: true, effectiveArgs: { approvalHash: hash } };
   }
 
   return refuse("unknown_action", `unknown action '${action}'`);
+}
+
+// --- entity scope: account, then campaign --------------------------------
+// The single authority for "may this entity be written to at all". Returns a refusal Decision, or
+// null when the entity is in scope. Every write action routes its target through THIS function — pause
+// and budget with the entity from args, publish with the entity recorded on its approval — so campaign
+// isolation cannot be enforced in one place and forgotten in another.
+//
+// Everything here fails CLOSED: an unreadable owner, an unresolvable campaign, or an absent/empty
+// allowlist all refuse. Permission is never inferred from missing information.
+async function checkEntityScope(
+  entityId: string,
+  { config, meta }: { config: GuardConfig; meta: GuardDeps["meta"] }
+): Promise<Decision | null> {
+  const owner = await failClosed(() => meta.entityAccountId(entityId), "owner_unreadable", "entity owner");
+  if (!owner.ok) return owner.decision;
+  const ownerAcct = canonAccount(owner.value);
+  const allowed = canonAccount(config.managedAccountId);
+  if (ownerAcct === null) {
+    return refuse("scope_unknown", "could not resolve entity's owning account (fail-closed)");
+  }
+  if (config.deniedAccountIds.map(canonAccount).includes(ownerAcct)) {
+    return refuse("scope_denied", `entity belongs to a denied account (${ownerAcct})`);
+  }
+  if (ownerAcct !== allowed) {
+    return refuse("scope_mismatch", `entity belongs to ${ownerAcct}, not the managed account`);
+  }
+
+  // CAMPAIGN scope — narrower than the account check above, so a trial can run on ONE campaign while
+  // every other campaign in the same account stays untouchable. This is the AUTHORITY for campaign
+  // isolation (resolved from Meta at write time). The app has a matching advisory pre-filter in
+  // app/lib/execution/campaign-scope.js (reasons: campaign_unknown / campaign_not_allowlisted /
+  // no_campaign_allowlist) — that one may be stale; this one may not.
+  const camps = config.allowedCampaignIds;
+  if (!Array.isArray(camps) || camps.length === 0) {
+    return refuse("campaign_scope_unset", "no allowed campaigns configured — entity writes refused");
+  }
+  const camp = await failClosed(() => meta.entityCampaignId(entityId), "campaign_unreadable", "entity campaign");
+  if (!camp.ok) return camp.decision;
+  const campId = camp.value === null || camp.value === undefined ? "" : String(camp.value).trim();
+  if (!campId) {
+    return refuse("campaign_scope_unknown", "could not resolve entity's owning campaign (fail-closed)");
+  }
+  if (!camps.some((c) => String(c).trim() === campId)) {
+    return refuse("campaign_scope_mismatch", `entity belongs to campaign ${campId}, which is not in the allowed set`);
+  }
+  return null;
 }
 
 // --- strict per-action argument validation -------------------------------

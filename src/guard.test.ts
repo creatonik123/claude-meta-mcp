@@ -103,8 +103,12 @@ test("pause: valid -> allowed", async () => {
 // publish branch). Asserting the reason proves the approval logic still ran and passed — a regression
 // that broke it would surface as approval_missing / approval_consumed / approval_unreadable instead.
 test("publish: valid unconsumed approval clears approval checks, then campaign scope refuses", async () => {
+  // The invariant is unchanged: an approval ALONE never authorises a publish, because the destination
+  // must be provably in scope. Only the refusal code moved — the default fixture's approval carries no
+  // targetEntityId, so the destination is unprovable and the guard says so precisely. An approval that
+  // IS bound to an in-scope ad set is exercised in guard-publish-scope.test.ts.
   const d = await evaluate("publish_approved_creative", { approvalHash: "abc" }, makeDeps());
-  expectRefuse(d, "campaign_scope_unverifiable");
+  expectRefuse(d, "approval_no_target");
 });
 
 // ---- kill switch ----
@@ -654,9 +658,11 @@ test("campaign scope: the SHIPPED config allows no campaign (nothing writable un
 });
 
 // ---- publish is campaign-scoped too: its target cannot be proven in scope, so it fails closed ----
-test("publish: refused while campaign isolation is in force (target campaign unverifiable)", async () => {
+test("publish: an approval with no recorded target is refused (destination unprovable)", async () => {
+  // Campaign isolation now applies to publish via the approval's own target entity. An approval
+  // without one cannot be checked, so it refuses — permission is never inferred from a missing target.
   const d = await evaluate("publish_approved_creative", { approvalHash: "abc" }, makeDeps());
-  expectRefuse(d, "campaign_scope_unverifiable");
+  expectRefuse(d, "approval_no_target");
 });
 
 test("publish: an unconsumed approval is NOT sufficient to bypass campaign scope", async () => {
