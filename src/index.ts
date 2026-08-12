@@ -27,8 +27,7 @@ import { assertSafeToolRegistration } from "./startup-assert.js";
 import { loadGuardConfig, assertShipInvariants } from "./load-config.js";
 import { resolveExecutionEnabled } from "./execution-config.js";
 import { wireExecution } from "./execution-wiring.js";
-
-const VERSION = "0.4.0";
+import { VERSION, buildInfo } from "./version.js";
 
 function log(
   level: "debug" | "info" | "warn" | "error",
@@ -139,7 +138,7 @@ export async function createApp(): Promise<express.Express> {
     res.json({
       status: "ok",
       server: "claude-meta-mcp",
-      version: VERSION,
+      ...buildInfo(process.env),
       meta_api_version: config.meta.apiVersion,
     });
   });
