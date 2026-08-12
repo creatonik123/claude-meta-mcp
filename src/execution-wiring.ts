@@ -14,8 +14,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { ActionType, GuardConfig, GuardDeps } from "./guard.js";
-import type { DoerDeps, ExecutionCoordinator } from "./doer.js";
+import type { ActionType, GuardConfig, GuardDb, GuardDeps } from "./guard.js";
+import type { DoerDeps, ExecutionCoordinator, PublishWiring } from "./doer.js";
+import type { Sql } from "./coordinator-db.js";
 import type { AuditSink } from "./audit.js";
 import type { ToolRegistrar } from "./read-only-gate.js";
 import { runGuardedDecision } from "./guarded-action.js";
@@ -24,9 +25,11 @@ import { resolveExecutionEnabled, assertExecutionBootSafe } from "./execution-co
 import { createNeonSql } from "./sql.js";
 import { createGuardDb } from "./guard-db.js";
 import { createGuardMeta } from "./guard-meta.js";
-import { createMetaWriter, createMetaReader, type GraphClient } from "./meta-adapters.js";
+import { createMetaWriter, createMetaReader, createPublisherGraph, type GraphClient } from "./meta-adapters.js";
 import { createDbCoordinator } from "./coordinator-db.js";
 import { createDbAuditSink } from "./audit-db.js";
+import { createPublishDb } from "./publish-db.js";
+import { createMetaPublisher } from "./meta-publisher.js";
 
 // Tool names (what the MCP menu shows) -> guard action types. The sets must not
 // drift: a test asserts keys === GATED_WRITE_TOOLS (see tool-gate.ts note).
@@ -105,6 +108,51 @@ function accountDay(timeZone: string): string {
   return s;
 }
 
+/**
+ * Assemble the publish path from its five pieces. Until this existed, an ALLOWED publish returned
+ * "publish is not wired on this deployment" — correct fail-closed behaviour, and the reason nothing
+ * could ever be created.
+ *
+ * TWO CHOICES HERE ARE SAFETY PROPERTIES, NOT PLUMBING:
+ *
+ * 1. `approvalByHash` is the GUARD'S OWN reader, passed by reference rather than rebuilt. The guard
+ *    decides whether the approval is spendable; the doer re-reads it immediately before the write to
+ *    narrow the window in which another run consumed it. If those two ever read the approval
+ *    differently — one consulting approval_consumptions, the other not — the re-read would bless an
+ *    approval the guard would have refused. Sharing the instance makes divergence impossible rather
+ *    than merely untrue today.
+ *
+ * 2. The publisher files against `guardConfig.managedAccountId`, never `env.META_AD_ACCOUNT_ID`.
+ *    That env var holds the PRODUCTION account (the app reads it by design for reporting); the write
+ *    path may only ever touch the sandbox. Taking the account from the reviewed config means the
+ *    account that was allowlisted is the account that gets written to.
+ *
+ * Not added to `assertExecutionBootSafe` deliberately: publish is the least essential of the three
+ * write tools, and refusing to boot over it would also take down pause and budget — the two writes
+ * the zero-spend smoke test and the A$75 test actually need. A half-wired publish already degrades to
+ * a structured no-write in `runPublish` (`DoerDeps.publish` is optional for exactly this reason).
+ */
+export function buildPublishWiring(
+  sql: Sql,
+  client: GraphClient,
+  guardConfig: GuardConfig,
+  guardDb: GuardDb
+): PublishWiring {
+  const publishDb = createPublishDb(sql);
+  const graph = createPublisherGraph(client);
+  return {
+    approvalByHash: guardDb.approvalByHash,
+    publisher: createMetaPublisher({
+      accountId: guardConfig.managedAccountId,
+      post: graph.post,
+      get: graph.get,
+      readComposition: (h) => publishDb.readComposition(h),
+      readAsset: (s) => publishDb.readAsset(s),
+    }),
+    consumeApproval: (h, ref) => publishDb.consumeApproval(h, ref),
+  };
+}
+
 // Construct every live dependency of the execution path. Fail-closed: a missing
 // connection string or unknown currency throws (and, at boot, aborts startup).
 export function buildExecutionDeps(
@@ -128,13 +176,16 @@ export function buildExecutionDeps(
       release: () => c.release(ACCOUNT_BUDGET_LOCK),
     };
   };
+  // ONE instance, shared: the guard decides on the approval and the doer re-reads it at write
+  // time. Two separately-built readers could drift and nothing would notice.
+  const guardDb = createGuardDb(sql);
   return {
     accountLock,
     guardDeps: {
       config: guardConfig,
       now: () => new Date(),
       env,
-      db: createGuardDb(sql),
+      db: guardDb,
       meta: createGuardMeta(client, guardConfig.managedAccountId, currencyOffset),
     },
     doerDeps: {
@@ -145,6 +196,7 @@ export function buildExecutionDeps(
         accountDay(guardConfig.accountTimezone)
       ),
       currencyOffset,
+      publish: buildPublishWiring(sql, client, guardConfig, guardDb),
     },
     audit: createDbAuditSink(sql),
     holder,
