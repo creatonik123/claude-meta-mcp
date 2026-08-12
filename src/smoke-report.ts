@@ -43,6 +43,27 @@ export function assessSurface(toolNames: string[]): SurfaceAssessment {
   };
 }
 
+/**
+ * Map the guard's REAL tool payload to a status. Shape proven by the first live run
+ * (2026-08-12): { decision: {allowed, code?}, execution: {executed, verified?, reason?} | null }.
+ * The first version of the runner GUESSED an app-side shape and judged 'missing' — this mapping
+ * is the corrected cross-boundary contract, pinned by tests.
+ */
+export function statusFromPayload(payload: {
+  decision?: { allowed?: boolean; code?: string };
+  execution?: { executed?: boolean; verified?: boolean; reason?: string } | null;
+}): { status: string; reason?: string } {
+  if (!payload.decision?.allowed) {
+    return { status: "refused", reason: payload.decision?.code ?? "unknown_refusal" };
+  }
+  const ex = payload.execution;
+  if (!ex || ex.executed !== true) {
+    return { status: "not_executed", reason: ex?.reason ?? "no execution result" };
+  }
+  if (ex.verified === true) return { status: "executed_verified" };
+  return { status: "executed_needs_reconcile" };
+}
+
 export interface SmokeRunInputs {
   pauseResult: { status?: string; reason?: string } | null;
   auditBefore: number | null;

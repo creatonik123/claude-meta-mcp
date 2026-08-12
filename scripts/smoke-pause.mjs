@@ -20,7 +20,7 @@
  */
 import { readFileSync } from "node:fs";
 import { neon } from "@neondatabase/serverless";
-import { assessSurface, judgeSmokeRun } from "../dist/smoke-report.js";
+import { assessSurface, judgeSmokeRun, statusFromPayload } from "../dist/smoke-report.js";
 
 function loadEnv() {
   const out = { ...process.env };
@@ -61,7 +61,7 @@ async function auditCount(sql) {
   try {
     const rows = await sql`
       SELECT count(*)::int AS n FROM audit_log
-       WHERE action LIKE 'execute\\_%'`;
+       WHERE action IN ('pause','adjust_adset_budget','publish_approved_creative')`;
     return rows[0]?.n ?? null;
   } catch {
     return null;
@@ -115,6 +115,6 @@ console.log(`pause_entity -> ${JSON.stringify(body)}`);
 const after = await auditCount(sql);
 console.log(`audit execute_* rows after: ${after}`);
 
-const verdict = judgeSmokeRun({ pauseResult: body, auditBefore: before, auditAfter: after });
+const verdict = judgeSmokeRun({ pauseResult: statusFromPayload(body), auditBefore: before, auditAfter: after });
 console.log(`\n${verdict.summary}`);
 process.exit(verdict.pass ? 0 : 1);

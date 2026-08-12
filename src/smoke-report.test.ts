@@ -69,3 +69,33 @@ test("needs_reconcile is reported as NOT a pass — the write may have landed bu
   assert.equal(v.pass, false);
   assert.match(v.summary, /reconcile/i);
 });
+
+// ---- mapping the guard's real payload to a status (the first live run proved the shape) ----
+
+import { statusFromPayload } from "./smoke-report.js";
+
+test("a refusal maps to refused + the guard's code", () => {
+  const s = statusFromPayload({ decision: { allowed: false, code: "campaign_scope_mismatch" } });
+  assert.deepEqual(s, { status: "refused", reason: "campaign_scope_mismatch" });
+});
+
+test("executed+verified maps to executed_verified", () => {
+  const s = statusFromPayload({ decision: { allowed: true }, execution: { executed: true, verified: true } });
+  assert.equal(s.status, "executed_verified");
+});
+
+test("a failed write (executed:false) maps to not_executed and carries the reason", () => {
+  const s = statusFromPayload({ decision: { allowed: true }, execution: { executed: false, reason: "Meta Graph API error 100" } });
+  assert.equal(s.status, "not_executed");
+  assert.match(s.reason ?? "", /error 100/);
+});
+
+test("executed but unverified maps to needs_reconcile — never rounded up", () => {
+  const s = statusFromPayload({ decision: { allowed: true }, execution: { executed: true, verified: false } });
+  assert.equal(s.status, "executed_needs_reconcile");
+});
+
+test("a null execution (recommend-only deployment) is not_executed, not a crash", () => {
+  const s = statusFromPayload({ decision: { allowed: true }, execution: null });
+  assert.equal(s.status, "not_executed");
+});
