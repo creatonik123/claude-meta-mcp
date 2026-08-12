@@ -92,7 +92,7 @@ test("createAd files the image and creative against the MANAGED account and crea
   assert.deepEqual(res, { id: "ad_1" });
   assert.deepEqual(
     client.calls.post.map((c) => c.path),
-    [`/${config.managedAccountId}/adimages`, `/${config.managedAccountId}/adcreatives`, `/${ADSET}/ads`]
+    [`/${config.managedAccountId}/adimages`, `/${config.managedAccountId}/adcreatives`, `/${config.managedAccountId}/ads`]
   );
 });
 

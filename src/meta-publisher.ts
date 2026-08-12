@@ -132,7 +132,10 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
       // 5. THE AD — the one call that could ever spend, and it is created PAUSED.
       //    `name` is passed through byte-for-byte: it carries the approval's binding hash and IS the
       //    idempotency key, so altering it would break search-before-create.
-      const ad = await deps.post(`/${adsetId}/ads`, {
+      //    Filed on the ACCOUNT edge: Graph accepts ad creation only at /act_<id>/ads (the ad-set
+      //    edge is read-only for ads — proven live 2026-08-12, error 100 "does not support this
+      //    operation"). The destination still comes ONLY from the approval, via adset_id below.
+      const ad = await deps.post(`/${deps.accountId}/ads`, {
         name,
         adset_id: adsetId,
         creative: { creative_id: creativeId },
