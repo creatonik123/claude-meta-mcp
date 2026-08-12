@@ -38,6 +38,11 @@ export interface Composition {
   message: string;
   page_id: string;
   target_entity_id?: string;
+  // The instant form the replacement inherits from the ad it replaces (serializer v2). Leads-objective
+  // ad sets REFUSE form-less creatives (subcode 3390001, proven live 2026-08-12) — and every real APS
+  // campaign is a leads campaign. Sealed into the approval because the form decides what data is
+  // collected from people: a human signs it, it is never read live at publish time.
+  lead_gen_form_id?: string;
 }
 
 export interface MetaPublisherDeps {
@@ -113,6 +118,14 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
       if (!imageHash) throw new Error("meta-publisher: upload returned no image hash — refusing to build a creative");
 
       // 4. The creative. Also safe to repeat; a creative with no ad delivers nothing.
+      //    With a sealed form: the CTA carries the form and the link leaves the CTA value (a lead ad
+      //    collects in-form; the destination link stays on link_data). A BLANK form id is treated as
+      //    absent rather than sent — Meta would accept the empty string as a literal form name.
+      const formId = typeof comp.lead_gen_form_id === "string" ? comp.lead_gen_form_id.trim() : "";
+      const callToAction =
+        formId !== ""
+          ? { type: "SIGN_UP", value: { lead_gen_form_id: formId } }
+          : { type: "LEARN_MORE", value: { link: comp.link } };
       const created = await deps.post(`/${deps.accountId}/adcreatives`, {
         name,
         object_story_spec: {
@@ -122,7 +135,7 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
             link: comp.link,
             message: comp.message,
             name: comp.headline,
-            call_to_action: { type: "LEARN_MORE", value: { link: comp.link } },
+            call_to_action: callToAction,
           },
         },
       });

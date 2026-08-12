@@ -208,3 +208,27 @@ test("search returns a plain array; a malformed answer throws rather than lookin
     await assert.rejects(() => publisher.searchAdsInAdset({ adsetId: ADSET, adName: NAME }), /ads|readable/i, JSON.stringify(bad));
   }
 });
+
+// ---- lead-form compositions (leads campaigns refuse form-less creatives; proven live 2026-08-12) ----
+
+test("a composition WITH lead_gen_form_id builds a form-carrying CTA (type SIGN_UP, no link in value)", async () => {
+  const { calls, publisher } = deps({ readComposition: async () => ({ ...composition, lead_gen_form_id: "897334729691676" }) });
+  await publisher.createAd({ adsetId: ADSET, name: NAME, approvalHash: HASH });
+  const creative = calls.find((c) => c.path.endsWith("/adcreatives"))!;
+  const cta = (creative.body as any).object_story_spec.link_data.call_to_action;
+  assert.deepEqual(cta, { type: "SIGN_UP", value: { lead_gen_form_id: "897334729691676" } });
+});
+
+test("a composition WITHOUT a form keeps the link CTA exactly as before (non-leads campaigns)", async () => {
+  const { calls, publisher } = deps();
+  await publisher.createAd({ adsetId: ADSET, name: NAME, approvalHash: HASH });
+  const cta = (calls.find((c) => c.path.endsWith("/adcreatives"))!.body as any).object_story_spec.link_data.call_to_action;
+  assert.deepEqual(cta, { type: "LEARN_MORE", value: { link: composition.link } });
+});
+
+test("a blank form id is treated as ABSENT, never sent as an empty form", async () => {
+  const { calls, publisher } = deps({ readComposition: async () => ({ ...composition, lead_gen_form_id: "  " }) });
+  await publisher.createAd({ adsetId: ADSET, name: NAME, approvalHash: HASH });
+  const cta = (calls.find((c) => c.path.endsWith("/adcreatives"))!.body as any).object_story_spec.link_data.call_to_action;
+  assert.deepEqual(cta, { type: "LEARN_MORE", value: { link: composition.link } });
+});
