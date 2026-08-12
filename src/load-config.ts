@@ -78,23 +78,26 @@ export function loadGuardConfig(url = new URL("../guard.config.json", import.met
  * at boot so the server refuses to start in an unsafe config.
  */
 export function assertShipInvariants(config: GuardConfig): void {
-  // Ship stage 2 (2026-08-12, the zero-spend smoke test): `pause` may be "auto"; every other write
-  // stays a hard boot refusal. Each further escalation (budget for the A$75 test, publish last)
-  // must be its OWN reviewed change to this function — that review step IS the safety mechanism.
+  // Ship stage 3 (2026-08-12, the zero-spend smoke tests): `pause` and `adjust_adset_budget` may be
+  // "auto" — both proven harmless inside the PAUSED sandbox campaign (a paused campaign cannot
+  // deliver, so neither a pause nor a budget number can spend). `publish_approved_creative` stays a
+  // hard boot refusal until its own reviewed escalation — that review step IS the safety mechanism.
+  const MAY_ARM = new Set(["pause", "adjust_adset_budget"]);
   const notOff = Object.entries(config.actionModes)
-    .filter(([k, m]) => !(m === "off" || (k === "pause" && m === "auto")))
+    .filter(([k, m]) => !(m === "off" || (MAY_ARM.has(k) && m === "auto")))
     .map(([k]) => k);
   if (notOff.length > 0) {
     throw new Error(
-      `ship invariant violated: only 'pause' may leave 'off' at this stage (recommend-only otherwise); not off: ${notOff.join(", ")}`
+      `ship invariant violated: only pause/adjust_adset_budget may leave 'off' at this stage (recommend-only otherwise); not off: ${notOff.join(", ")}`
     );
   }
-  // An armed pause must name its one campaign: with an empty allowlist every call refuses anyway
+  // ANY armed mode must name its one campaign: with an empty allowlist every call refuses anyway
   // (misconfiguration, not safety), and a wide allowlist is what this invariant exists to prevent.
   const armedCamps = config.allowedCampaignIds ?? [];
-  if (config.actionModes.pause === "auto" && armedCamps.length !== 1) {
+  const anyArmed = Object.values(config.actionModes).some((m) => m !== "off");
+  if (anyArmed && armedCamps.length !== 1) {
     throw new Error(
-      `ship invariant violated: pause 'auto' requires exactly one campaign in allowedCampaignIds (got ${armedCamps.length})`
+      `ship invariant violated: an armed action mode requires exactly one campaign in allowedCampaignIds (got ${armedCamps.length})`
     );
   }
   if (!config.deniedAccountIds.includes(FORBIDDEN_ACCOUNT)) {

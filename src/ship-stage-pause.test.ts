@@ -25,9 +25,14 @@ test("pause 'on' with an EMPTY allowlist refuses boot — an armed pause must na
   assert.throws(() => assertShipInvariants(c), /allowedCampaignIds|allowlist/i);
 });
 
-test("budget mode can NEVER be 'on' at this stage, allowlist or not", () => {
+test("budget 'auto' with a one-campaign allowlist boots (stage 3, the zero-spend budget smoke)", () => {
   const c = { ...base(), actionModes: { ...base().actionModes, adjust_adset_budget: "auto" as const }, allowedCampaignIds: ["52623318982420"] };
-  assert.throws(() => assertShipInvariants(c), /adjust_adset_budget/);
+  assert.doesNotThrow(() => assertShipInvariants(c));
+});
+
+test("budget 'auto' with an EMPTY allowlist refuses boot", () => {
+  const c = { ...base(), actionModes: { pause: "off" as const, adjust_adset_budget: "auto" as const, publish_approved_creative: "off" as const }, allowedCampaignIds: [] };
+  assert.throws(() => assertShipInvariants(c), /allowedCampaignIds|allowlist/i);
 });
 
 test("publish mode can NEVER be 'on' at this stage, allowlist or not", () => {

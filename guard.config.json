@@ -10,7 +10,7 @@
   "accountTimezone": "Australia/North",
   "actionModes": {
     "pause": "auto",
-    "adjust_adset_budget": "off",
+    "adjust_adset_budget": "auto",
     "publish_approved_creative": "off"
   },
   "killSwitchEnvFlag": "ADPILOT_KILL_ALL",
