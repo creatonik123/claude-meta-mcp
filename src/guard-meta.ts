@@ -115,18 +115,30 @@ export function createGuardMeta(client: GraphClient, accountId: string, currency
       const insights = (preset: string) =>
         client.get<{ data?: Array<Record<string, unknown>> }>(`/${accountId}/insights`, { fields: "spend", date_preset: preset });
       const [todayR, mtdR] = await Promise.all([insights("today"), insights("this_month")]);
-      const todayRow = Array.isArray(todayR?.data) ? todayR.data[0] : undefined;
-      const mtdRow = Array.isArray(mtdR?.data) ? mtdR.data[0] : undefined;
-      const todaySpend = todayRow ? Number(todayRow.spend) : NaN;
-      const mtdSpend = mtdRow ? Number(mtdRow.spend) : NaN;
-      // "complete" gates the guard's spend cap: BOTH legs must parse, else the read is partial/unknown
-      // and the guard must refuse — coercing a missing month-to-date to 0 would fail the cap OPEN.
+      // A well-formed EMPTY answer (200 + data is an ARRAY with no rows) is a successful read of a
+      // zero-spend window — Meta omits the row when there was nothing to aggregate. Hit live on the
+      // never-delivered APS 2026 account (2026-08-12): reading empty as "unknown" made every budget
+      // write impossible on a fresh account. Only the array shape counts as empty; a missing/odd
+      // `data` key is still malformed, and a thrown request never reaches here (failClosed upstream).
+      const todayArr = Array.isArray(todayR?.data) ? todayR.data : null;
+      const mtdArr = Array.isArray(mtdR?.data) ? mtdR.data : null;
+      const todayRow = todayArr?.[0];
+      const mtdRow = mtdArr?.[0];
+      const todayEmpty = todayArr !== null && todayArr.length === 0;
+      const mtdEmpty = mtdArr !== null && mtdArr.length === 0;
+      const todaySpend = todayRow ? Number(todayRow.spend) : todayEmpty ? 0 : NaN;
+      // Month-to-date empty while TODAY has a row is impossible data (today ⊆ month) — malformed.
+      const mtdSpend = mtdRow ? Number(mtdRow.spend) : mtdEmpty && !todayRow ? 0 : NaN;
+      // "complete" gates the guard's spend cap: BOTH legs must parse (or be well-formed empties),
+      // else the read is partial/unknown and the guard must refuse — coercing a missing
+      // month-to-date to 0 would fail the cap OPEN.
       const complete = Number.isFinite(todaySpend) && Number.isFinite(mtdSpend) && todaySpend >= 0 && mtdSpend >= 0;
       return {
         today: Number.isFinite(todaySpend) ? todaySpend : 0,
         monthToDate: Number.isFinite(mtdSpend) ? mtdSpend : 0,
         dateStop: typeof todayRow?.date_stop === "string" ? (todayRow.date_stop as string) : "",
         complete,
+        todayEmpty,
       };
     },
   };

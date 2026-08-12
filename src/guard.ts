@@ -28,6 +28,10 @@ export interface SpendSnapshot {
   monthToDate: number; // AUD spent month-to-date
   dateStop: string; // YYYY-MM-DD the figure covers (account tz)
   complete: boolean; // false if Meta returned an empty/partial page
+  // true when Meta answered today's leg with a well-formed EMPTY result (zero spend today —
+  // e.g. a fresh account). There is no snapshot to be stale, so the dateStop freshness check
+  // does not apply; the caps then run against a true zero.
+  todayEmpty?: boolean;
 }
 
 export interface AccountLiveBudget {
@@ -490,7 +494,8 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
     if (spend === null || spend.complete !== true) {
       return refuse("spend_indeterminate", "realised spend unavailable or incomplete — refused (treat empty as unknown)");
     }
-    if (spend.dateStop !== day) {
+    // An empty today-leg has no snapshot to be stale — the freshness check applies only when a row exists.
+    if (spend.todayEmpty !== true && spend.dateStop !== day) {
       return refuse("spend_stale", `spend snapshot covers ${spend.dateStop}, not today ${day} — refused`);
     }
     const sc = config.spendCaps;

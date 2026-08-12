@@ -53,8 +53,52 @@ test("realisedSpend reads today + month-to-date account spend, marks complete, c
   assert.equal(s?.complete, true);
 });
 
-test("realisedSpend with empty insights -> not complete (guard treats empty as unknown and refuses)", async () => {
+// CHANGED 2026-08-12: a well-formed EMPTY answer is a successful read of a zero-spend account.
+// Meta answers a never-delivered account with 200 + data:[] — hit live on APS 2026: the old
+// "empty = unknown" reading made every budget write impossible on a fresh account (and would have
+// refused day-1 of the A$75 campaign). Malformed stays refused: only BOTH legs answering with a
+// well-formed (array) empty result count as zero.
+test("realisedSpend: both legs 200 + empty ARRAY -> genuinely A$0, complete, todayEmpty", async () => {
   const m = createGuardMeta(fakeClient({ [`/${ACCT}/insights`]: { data: [] } }), ACCT, 100);
+  const s = await m.realisedSpend();
+  assert.equal(s?.complete, true);
+  assert.equal(s?.today, 0);
+  assert.equal(s?.monthToDate, 0);
+  assert.equal(s?.todayEmpty, true);
+});
+
+test("realisedSpend: today empty but month has spend -> complete (spent earlier this month, none today)", async () => {
+  const client: GraphClient = {
+    async get(path: string, params: { date_preset?: string } = {}) {
+      if (path !== `/${ACCT}/insights`) return {} as never;
+      return (params.date_preset === "today" ? { data: [] } : { data: [{ spend: "80.25", date_stop: "2026-08-12" }] }) as never;
+    },
+    async post() { throw new Error("no"); },
+  };
+  const s = await createGuardMeta(client, ACCT, 100).realisedSpend();
+  assert.equal(s?.complete, true);
+  assert.equal(s?.today, 0);
+  assert.equal(s?.monthToDate, 80.25);
+  assert.equal(s?.todayEmpty, true);
+});
+
+test("realisedSpend: today leg MALFORMED (missing data key) while month is fine -> refused, never zero", async () => {
+  // Isolates the TODAY leg: with month healthy, only the today-shape check can refuse this. A
+  // mutation that coerces a missing key to empty-array passed the suite because the month leg
+  // masked it — this test pins each leg separately.
+  const client: GraphClient = {
+    async get(path: string, params: { date_preset?: string } = {}) {
+      if (path !== `/${ACCT}/insights`) return {} as never;
+      return (params.date_preset === "today" ? {} : { data: [{ spend: "80.25", date_stop: "2026-08-12" }] }) as never;
+    },
+    async post() { throw new Error("no"); },
+  };
+  const s = await createGuardMeta(client, ACCT, 100).realisedSpend();
+  assert.equal(s?.complete, false);
+});
+
+test("realisedSpend: a MISSING data key (not an array) is malformed, never zero", async () => {
+  const m = createGuardMeta(fakeClient({ [`/${ACCT}/insights`]: {} }), ACCT, 100);
   const s = await m.realisedSpend();
   assert.equal(s?.complete, false);
 });
