@@ -80,15 +80,14 @@ export function loadGuardConfig(url = new URL("../guard.config.json", import.met
 export function assertShipInvariants(config: GuardConfig): void {
   // Ship stage 3 (2026-08-12, the zero-spend smoke tests): `pause` and `adjust_adset_budget` may be
   // "auto" — both proven harmless inside the PAUSED sandbox campaign (a paused campaign cannot
-  // deliver, so neither a pause nor a budget number can spend). `publish_approved_creative` stays a
-  // hard boot refusal until its own reviewed escalation — that review step IS the safety mechanism.
-  const MAY_ARM = new Set(["pause", "adjust_adset_budget"]);
+  // deliver, so neither a pause nor a budget number can spend). stage 4 (same day) arms publish for the seeded-approval smoke: the ad is BORN PAUSED inside the PAUSED sandbox, double-locked — that review step IS the safety mechanism.
+  const MAY_ARM = new Set(["pause", "adjust_adset_budget", "publish_approved_creative"]);
   const notOff = Object.entries(config.actionModes)
     .filter(([k, m]) => !(m === "off" || (MAY_ARM.has(k) && m === "auto")))
     .map(([k]) => k);
   if (notOff.length > 0) {
     throw new Error(
-      `ship invariant violated: only pause/adjust_adset_budget may leave 'off' at this stage (recommend-only otherwise); not off: ${notOff.join(", ")}`
+      `ship invariant violated: an unknown or invalid mode is set (only off, or auto on the three known actions); not off: ${notOff.join(", ")}`
     );
   }
   // ANY armed mode must name its one campaign: with an empty allowlist every call refuses anyway

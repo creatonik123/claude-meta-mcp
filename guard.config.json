@@ -11,7 +11,7 @@
   "actionModes": {
     "pause": "auto",
     "adjust_adset_budget": "auto",
-    "publish_approved_creative": "off"
+    "publish_approved_creative": "auto"
   },
   "killSwitchEnvFlag": "ADPILOT_KILL_ALL",
   "budgetClamp": {

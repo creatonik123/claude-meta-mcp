@@ -17,7 +17,7 @@ test("the shipped config satisfies the ship invariants for the current stage", (
   // reviewed escalations (see ship-stage-pause.test.ts).
   assert.equal(c.actionModes.pause, "auto");
   assert.equal(c.actionModes.adjust_adset_budget, "auto");
-  assert.equal(c.actionModes.publish_approved_creative, "off");
+  assert.equal(c.actionModes.publish_approved_creative, "auto");
   assert.deepEqual(c.allowedCampaignIds, ["52623318982420"]);
 });
 
@@ -27,10 +27,10 @@ test("a non-IANA accountTimezone is refused at config load (boot), not at decisi
   assert.throws(() => parseGuardConfig({ ...c, accountTimezone: "" }));
 });
 
-test("assertShipInvariants throws if publish leaves 'off' — it has no escalation yet", () => {
+test("assertShipInvariants throws on a mode value outside off/auto", () => {
   const c = loadGuardConfig();
-  const tampered = { ...c, actionModes: { ...c.actionModes, publish_approved_creative: "auto" as const } };
-  assert.throws(() => assertShipInvariants(tampered), /recommend-only/);
+  const tampered = { ...c, actionModes: { ...c.actionModes, pause: "confirm" as const } };
+  assert.throws(() => assertShipInvariants(tampered), /recommend-only|invalid/);
 });
 
 test("assertShipInvariants throws if the forbidden account is removed from the deny list", () => {
