@@ -39,8 +39,43 @@ export function createGuardDb(sql: Sql): GuardDb {
       const v = num(rows[0].version);
       return v != null && Number.isInteger(v) ? v : null;
     },
-    async approvalByHash() {
-      return BLOCKED("approvalByHash", "approval_records has no consumed column; publish path deferred");
+    // The human's signature, and whether it has already been spent.
+    //
+    // Consumption is NOT a column on approval_records: that table carries an append-only trigger
+    // refusing every UPDATE, so its `consumed` column could never actually be written. The fact lives
+    // in approval_consumptions instead (app migration 0011), one row per spent approval, which is why
+    // this reads both tables in one statement.
+    //
+    // THE ASYMMETRY THAT DICTATES THE ERROR HANDLING: `consumed: false` is the ONLY value that lets a
+    // publish proceed. So anything we cannot read with certainty THROWS (the guard turns that into a
+    // fail-closed refusal) rather than defaulting — a driver quirk must never make a spent approval
+    // look fresh and authorise a second live ad.
+    async approvalByHash(hash: string) {
+      const h = typeof hash === "string" ? hash.trim() : "";
+      // Validate before querying: the hash is a binding fingerprint, always lowercase 64-hex.
+      if (!/^[0-9a-f]{64}$/.test(h)) {
+        throw new Error("guard-db: approvalByHash needs a lowercase 64-hex binding hash");
+      }
+      const rows = await sql(
+        `SELECT ar.target_entity_id AS target,
+                (SELECT count(*) FROM approval_consumptions ac WHERE ac.binding_hash = ar.binding_hash) AS consumed_count
+           FROM approval_records ar
+          WHERE ar.binding_hash = $1`,
+        [h]
+      );
+      if (rows.length === 0) return null; // no signature -> guard refuses approval_missing
+      const r = rows[0];
+      // count() legitimately arrives as a string on some drivers, so coerce — but reject anything that
+      // is not a whole, non-negative number. Unreadable => throw, never "unconsumed".
+      const raw = r.consumed_count;
+      const n = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+        throw new Error(`guard-db: unreadable consumption count for approval (got ${JSON.stringify(raw)})`);
+      }
+      // Never coerced to a string: the guard compares the target as a trimmed string against the
+      // campaign allowlist, so a number that stringifies differently would miss it silently.
+      const target = typeof r.target === "string" && r.target.trim() !== "" ? r.target.trim() : null;
+      return { consumed: n > 0, targetEntityId: target };
     },
     async startOfDayBudget(entityId: string, day: string) {
       const rows = await sql(

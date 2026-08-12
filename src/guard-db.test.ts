@@ -25,9 +25,14 @@ test("killSwitchRow returns null when the row is missing (guard treats null as f
   assert.equal(await db.killSwitchRow(), null);
 });
 
-test("approvalByHash still fails closed (throws) — publish path deferred", async () => {
-  const db = createGuardDb(fakeSql(() => []));
-  await assert.rejects(() => db.approvalByHash("x"));
+// Was "approvalByHash still fails closed (throws) — publish path deferred", which pinned the old stub.
+// approvalByHash is now really wired (see guard-db-approval.test.ts), and this test was left passing for
+// the WRONG reason: "x" is rejected by hash validation, not by a deferred publish path. Renamed to say
+// what it actually asserts, so it cannot be mistaken for proof that publish is still disabled.
+test("approvalByHash refuses a malformed hash before touching the database", async () => {
+  const sql = fakeSql(() => []);
+  await assert.rejects(() => createGuardDb(sql).approvalByHash("x"), /hash/i);
+  assert.equal(sql.calls.length, 0, "a malformed hash must never reach the database");
 });
 
 test("schemaVersion returns the integer; null when missing or non-integer", async () => {
