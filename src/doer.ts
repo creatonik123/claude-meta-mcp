@@ -5,6 +5,8 @@
  * without ever touching Meta. Never called for a refusal.
  */
 import type { ActionType, Decision } from "./guard.js";
+import { executePublish } from "./doer-publish.js";
+import type { AdPublisher } from "./doer-publish.js";
 
 export interface MetaWriter {
   post(
@@ -30,11 +32,25 @@ export interface ExecutionCoordinator {
   markApplied(dedupeKey: string): Promise<void>;
 }
 
+// Publish is a different write shape (create, not update) and lives in doer-publish.ts. Its deps are
+// OPTIONAL so a deployment that does not publish stays exactly as it was: absent wiring produces a
+// structured no-write, never a crash and never an improvised creation.
+export interface PublishWiring {
+  // The immutable record the guard checked. Re-read HERE, immediately before the write: the guard
+  // decided at time T and the write happens at T+n, and in between another run can consume the
+  // approval. This is also the ONLY source of the destination — the guard passes just the hash, so no
+  // caller-supplied id can influence where the creative lands.
+  approvalByHash(hash: string): Promise<{ consumed: boolean; targetEntityId?: string | null } | null>;
+  publisher: AdPublisher;
+  consumeApproval(bindingHash: string, publishedRef: string): Promise<{ consumed: boolean }>;
+}
+
 export interface DoerDeps {
   executionEnabled: boolean;
   writer: MetaWriter;
   reader: MetaReader;
   coordinator: ExecutionCoordinator;
+  publish?: PublishWiring;
   // The managed account's currency offset (minor units per major unit) — e.g. 100
   // for AUD, 1 for zero-decimal currencies like JPY. Read from the account, never
   // assumed: guessing it would mis-budget by up to 100x.
@@ -85,12 +101,71 @@ function translate(
     return { path: `/${entityId}`, body: { daily_budget: minorUnits }, verify: { entityId, field: "daily_budget", expected: String(minorUnits) } };
   }
   if (action === "publish_approved_creative") {
-    // The guard can allow publish, but publishing approved creative is handled by the
-    // separate creative pipeline, not this write path. Refuse here (structured no-write,
-    // audited) so an allowed publish never silently looks like a doer failure.
-    throw new Error("publish_approved_creative is handled by the creative pipeline, not the doer");
+    // Publish does NOT go through translate(), and that is a design decision rather than an omission.
+    // This function models an idempotent absolute update on an entity that already exists, verified by
+    // re-reading one field. Creating an ad has no prior entity id, is not idempotent, and is verified by
+    // re-SEARCHING for a keyed name — so it lives in doer-publish.ts `executePublish`, which owns the
+    // per-approval lock, search-before-create and verify-after-create.
+    //
+    // Reaching HERE means a publish was routed down the update path by mistake. Refuse (structured
+    // no-write, audited) rather than improvise: an improvised creation cannot be un-sent.
+    throw new Error("publish_approved_creative is executed by doer-publish.ts (executePublish), not translate()");
   }
   throw new Error(`unsupported action '${action}'`);
+}
+
+/**
+ * Resolve the publish destination from the approval record, then run the create path.
+ *
+ * Every branch here refuses rather than guesses, because the thing being decided is whether to make a
+ * write that cannot be un-sent:
+ *   - wiring absent        -> a half-configured deployment must not improvise a creation
+ *   - approval unreadable  -> not knowing whether an approval is spent is not permission
+ *   - approval missing     -> nothing was signed
+ *   - approval consumed    -> it was already spent, possibly seconds ago by another run
+ *   - no target recorded   -> the destination is unprovable; the guard refuses these too
+ */
+async function runPublish(decision: Decision, deps: DoerDeps): Promise<ExecutionResult> {
+  const wiring = deps.publish;
+  if (!wiring || typeof wiring.approvalByHash !== "function") {
+    return { executed: false, reason: "publish is not wired on this deployment — no ad created (fail-closed)" };
+  }
+  const args = (decision as { effectiveArgs: Record<string, unknown> }).effectiveArgs || {};
+  const hash = typeof args.approvalHash === "string" ? args.approvalHash.trim() : "";
+
+  let approval: { consumed: boolean; targetEntityId?: string | null } | null;
+  try {
+    approval = await wiring.approvalByHash(hash);
+  } catch (e) {
+    return { executed: false, reason: `approval unreadable (fail-closed): ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (approval === null) {
+    return { executed: false, reason: "no approval record matches this hash — not executed" };
+  }
+  if (approval.consumed !== false) {
+    return { executed: false, reason: "approval is already consumed (or its state is unknown) — not executed" };
+  }
+  const target = typeof approval.targetEntityId === "string" ? approval.targetEntityId.trim() : "";
+  if (target === "") {
+    return { executed: false, reason: "approval record carries no target ad set — publish destination unprovable" };
+  }
+
+  const r = await executePublish(
+    { approvalHash: hash, targetEntityId: target },
+    { executionEnabled: deps.executionEnabled, coordinator: deps.coordinator, publisher: wiring.publisher, consumeApproval: wiring.consumeApproval }
+  );
+
+  // Map the publish outcome onto the doer's shared result shape. `wrote` describes the creation for the
+  // audit row; there is no field read-back for a create, so `verified` comes from the search-after-create.
+  if (r.executed === false) return { executed: false, reason: r.reason };
+  if (r.verified === true) {
+    const wrote = { path: `/${target}/ads`, body: { name: r.adName, approvalHash: hash } as Record<string, unknown> };
+    return { executed: true, verified: true, wrote, result: { adId: r.adId, ...(r.consumeFailed ? { consumeFailed: true } : {}) } };
+  }
+  // Unverified: the ad NAME may be unknown (the create may not have got that far), so the audit row
+  // records the destination and the approval rather than inventing a name.
+  const wrote = { path: `/${target}/ads`, body: { approvalHash: hash } as Record<string, unknown> };
+  return { executed: true, verified: false, wrote, result: { adId: r.adId ?? null }, reconcile: r.reconcile };
 }
 
 export async function executeDecision(
@@ -104,6 +179,12 @@ export async function executeDecision(
   }
   if (!decision.allowed) {
     return { executed: false, reason: "decision was refused by the guard — not executed" };
+  }
+
+  // PUBLISH takes the create path, never translate(). Routed before translate() is even attempted, so a
+  // publish can never be mistaken for an update.
+  if (action === "publish_approved_creative") {
+    return await runPublish(decision, deps);
   }
   // A translation failure (unsupported action, bad offset, malformed budget) is a
   // structured no-write, never a thrown exception (PRD R3: blocked calls refuse).

@@ -134,13 +134,21 @@ test("budget with a malformed dailyBudget -> NO write (fail-closed, never post N
   }
 });
 
-test("an allowed publish_approved_creative -> structured NO write (handled by the creative pipeline, not a crash)", async () => {
+// Changed TWICE today, both deliberate. It originally asserted the reason mentioned "the creative
+// pipeline" (true when publish had no implementation anywhere). Publish now executes in doer-publish.ts
+// with its own lock, search-before-create and verify-after-create, and executeDecision routes it there
+// BEFORE translate() is attempted.
+//
+// These deps carry no `publish` wiring — exactly a deployment that does not publish. What this test
+// guards is therefore the case that matters most for such a deployment: an allowed publish performs NO
+// write and returns a structured refusal, rather than crashing or improvising a creation.
+test("an allowed publish on a deployment with NO publish wiring -> structured NO write", async () => {
   const writer = fakeWriter();
   const decision: Decision = { allowed: true, effectiveArgs: { approvalHash: "abc" } };
   const result = await executeDecision("publish_approved_creative", decision, deps({ writer }));
-  assert.equal(writer.calls.length, 0);
+  assert.equal(writer.calls.length, 0, "a creation cannot be un-sent — this path must never write");
   assert.equal(result.executed, false);
-  if (result.executed === false) assert.match(result.reason, /creative pipeline/i);
+  if (result.executed === false) assert.match(result.reason, /publish is not wired/i);
 });
 
 test("enabled but decision was REFUSED -> performs NO write", async () => {

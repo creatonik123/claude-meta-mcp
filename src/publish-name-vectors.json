@@ -1,0 +1,22 @@
+[
+  {
+    "name": "all-zero hash",
+    "binding_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "ad_name": "AdPilot [apx:0000000000000000000000000000000000000000000000000000000000000000]"
+  },
+  {
+    "name": "all-f hash",
+    "binding_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "ad_name": "AdPilot [apx:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff]"
+  },
+  {
+    "name": "mixed hash",
+    "binding_hash": "3f2c8a91b47d0e65c1a2f8e93b6d47a05c8e1f3b9d2a6c4e7f0b8d5a3c9e2f1d",
+    "ad_name": "AdPilot [apx:3f2c8a91b47d0e65c1a2f8e93b6d47a05c8e1f3b9d2a6c4e7f0b8d5a3c9e2f1d]"
+  },
+  {
+    "name": "hex-alphabet hash",
+    "binding_hash": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "ad_name": "AdPilot [apx:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789]"
+  }
+]
