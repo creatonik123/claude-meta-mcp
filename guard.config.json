@@ -3,11 +3,13 @@
   "deniedAccountIds": [
     "act_1133075730765139"
   ],
-  "allowedCampaignIds": [],
+  "allowedCampaignIds": [
+    "52623318982420"
+  ],
   "currency": "AUD",
   "accountTimezone": "Australia/North",
   "actionModes": {
-    "pause": "off",
+    "pause": "auto",
     "adjust_adset_budget": "off",
     "publish_approved_creative": "off"
   },

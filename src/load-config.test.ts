@@ -9,11 +9,16 @@ test("the on-disk guard.config.json parses and validates", () => {
   assert.ok(c.deniedAccountIds.includes("act_1133075730765139"));
 });
 
-test("the shipped config satisfies the recommend-only ship invariants", () => {
+test("the shipped config satisfies the ship invariants for the current stage", () => {
   const c = loadGuardConfig();
   assert.doesNotThrow(() => assertShipInvariants(c));
-  // belt-and-braces: every action mode is exactly 'off'
-  for (const m of Object.values(c.actionModes)) assert.equal(m, "off");
+  // Stage 2 (zero-spend smoke test): pause armed against exactly one campaign — the paused
+  // sandbox 52623318982420 in APS 2026. Budget and publish stay 'off' until their own
+  // reviewed escalations (see ship-stage-pause.test.ts).
+  assert.equal(c.actionModes.pause, "auto");
+  assert.equal(c.actionModes.adjust_adset_budget, "off");
+  assert.equal(c.actionModes.publish_approved_creative, "off");
+  assert.deepEqual(c.allowedCampaignIds, ["52623318982420"]);
 });
 
 test("a non-IANA accountTimezone is refused at config load (boot), not at decision time", () => {
@@ -22,9 +27,9 @@ test("a non-IANA accountTimezone is refused at config load (boot), not at decisi
   assert.throws(() => parseGuardConfig({ ...c, accountTimezone: "" }));
 });
 
-test("assertShipInvariants throws if any action mode is not 'off'", () => {
+test("assertShipInvariants throws if any mode other than pause leaves 'off'", () => {
   const c = loadGuardConfig();
-  const tampered = { ...c, actionModes: { ...c.actionModes, pause: "auto" as const } };
+  const tampered = { ...c, actionModes: { ...c.actionModes, adjust_adset_budget: "auto" as const } };
   assert.throws(() => assertShipInvariants(tampered), /recommend-only/);
 });
 
@@ -61,7 +66,7 @@ test("ship invariant: the allowlist may not exceed ONE campaign (the trial is a 
     () => assertShipInvariants({ ...base, allowedCampaignIds: ["120200123", "120200999"] }),
     /allowedCampaignIds/
   );
-  // zero (shipped) and exactly one are both acceptable
-  assertShipInvariants({ ...base, allowedCampaignIds: [] });
+  // exactly one is acceptable; empty is acceptable only when pause is off (stage 2 arms pause)
   assertShipInvariants({ ...base, allowedCampaignIds: ["120200123"] });
+  assertShipInvariants({ ...base, allowedCampaignIds: [], actionModes: { ...base.actionModes, pause: "off" as const } });
 });

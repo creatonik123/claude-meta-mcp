@@ -38,7 +38,10 @@ const fakeClient: GraphClient = {
 };
 
 function offConfig(): GuardConfig {
-  return loadGuardConfig(); // the shipped config: all action modes 'off'
+  // NOT the shipped config any more: since stage 2 the shipped file arms pause for the smoke-test
+  // campaign. This fixture pins the all-off behaviour (mode off => refuse + audit) explicitly.
+  const c = loadGuardConfig();
+  return { ...c, allowedCampaignIds: [], actionModes: { pause: "off", adjust_adset_budget: "off", publish_approved_creative: "off" } };
 }
 
 function autoConfig(): GuardConfig {
@@ -243,9 +246,9 @@ test("withDayScopedDedupe fails closed when the day cannot be resolved", async (
   await assert.rejects(() => wrapped.alreadyApplied("k"), /tz broke/); // doer turns this into a no-write refusal
 });
 
-// ---- the handler chain, with the SHIPPED (all-off) config: refuse + audit ----
+// ---- the handler chain, with an all-off config: refuse + audit ----
 
-test("with shipped config, a pause call is REFUSED (action_mode_off) and audited — no write", async () => {
+test("with modes off, a pause call is REFUSED (action_mode_off) and audited — no write", async () => {
   const mcp = fakeMcp();
   const audits: AuditEntry[] = [];
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];

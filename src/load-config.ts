@@ -78,12 +78,23 @@ export function loadGuardConfig(url = new URL("../guard.config.json", import.met
  * at boot so the server refuses to start in an unsafe config.
  */
 export function assertShipInvariants(config: GuardConfig): void {
+  // Ship stage 2 (2026-08-12, the zero-spend smoke test): `pause` may be "auto"; every other write
+  // stays a hard boot refusal. Each further escalation (budget for the A$75 test, publish last)
+  // must be its OWN reviewed change to this function — that review step IS the safety mechanism.
   const notOff = Object.entries(config.actionModes)
-    .filter(([, m]) => m !== "off")
+    .filter(([k, m]) => !(m === "off" || (k === "pause" && m === "auto")))
     .map(([k]) => k);
   if (notOff.length > 0) {
     throw new Error(
-      `ship invariant violated: action modes must all be 'off' (recommend-only); not off: ${notOff.join(", ")}`
+      `ship invariant violated: only 'pause' may leave 'off' at this stage (recommend-only otherwise); not off: ${notOff.join(", ")}`
+    );
+  }
+  // An armed pause must name its one campaign: with an empty allowlist every call refuses anyway
+  // (misconfiguration, not safety), and a wide allowlist is what this invariant exists to prevent.
+  const armedCamps = config.allowedCampaignIds ?? [];
+  if (config.actionModes.pause === "auto" && armedCamps.length !== 1) {
+    throw new Error(
+      `ship invariant violated: pause 'auto' requires exactly one campaign in allowedCampaignIds (got ${armedCamps.length})`
     );
   }
   if (!config.deniedAccountIds.includes(FORBIDDEN_ACCOUNT)) {

@@ -652,9 +652,11 @@ test("campaign scope: exact id match only — a neighbouring id does not pass", 
   expectRefuse(d, "campaign_scope_mismatch");
 });
 
-test("campaign scope: the SHIPPED config allows no campaign (nothing writable until a reviewed PR)", async () => {
+test("campaign scope: the SHIPPED config allows exactly the smoke-test sandbox campaign", async () => {
+  // Stage 2: the one allowed campaign is the PAUSED sandbox in APS 2026 (52623318982420),
+  // created 2026-08-12 for the zero-spend smoke test. Nothing else is writable.
   const shipped = (await import("./load-config.ts")).loadGuardConfig();
-  assert.deepEqual(shipped.allowedCampaignIds, []);
+  assert.deepEqual(shipped.allowedCampaignIds, ["52623318982420"]);
 });
 
 // ---- publish is campaign-scoped too: its target cannot be proven in scope, so it fails closed ----
