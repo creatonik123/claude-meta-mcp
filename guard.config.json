@@ -29,7 +29,7 @@
   },
   "targets": {
     "targetCplAud": 25,
-    "provisional": true
+    "provisional": false
   },
   "schemaVersion": 1
 }

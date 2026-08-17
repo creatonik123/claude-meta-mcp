@@ -20,6 +20,11 @@ test("the shipped config satisfies the ship invariants for the current stage", (
   assert.equal(c.actionModes.adjust_adset_budget, "auto");
   assert.equal(c.actionModes.publish_approved_creative, "auto");
   assert.deepEqual(c.allowedCampaignIds, ["52623496198420"]);
+  // A$25 was signed off as the real CPL target on 2026-08-13, so it is no longer provisional.
+  // The flag exists so nobody mistakes a placeholder for an agreed number; leaving it true after
+  // sign-off would misreport the config's own status.
+  assert.equal(c.targets.targetCplAud, 25);
+  assert.equal(c.targets.provisional, false);
 });
 
 test("a non-IANA accountTimezone is refused at config load (boot), not at decision time", () => {

@@ -1,5 +1,5 @@
 /**
- * Ship-stage escalation for the zero-spend smoke test (2026-08-12, Nikhat's switch-on):
+ * Ship-stage escalation for the zero-spend smoke test (2026-08-12, operator switch-on):
  * the ship invariant relaxes by EXACTLY ONE notch — `pause` may now be "auto" — and nothing else.
  *
  * The properties that keep this the smallest possible step:
