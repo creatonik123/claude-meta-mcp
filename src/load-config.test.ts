@@ -12,13 +12,14 @@ test("the on-disk guard.config.json parses and validates", () => {
 test("the shipped config satisfies the ship invariants for the current stage", () => {
   const c = loadGuardConfig();
   assert.doesNotThrow(() => assertShipInvariants(c));
-  // Stage 3 (zero-spend smoke tests): pause + budget armed against exactly one campaign — the paused
-  // sandbox 52623318982420 in APS 2026. Budget and publish stay 'off' until their own
-  // reviewed escalations (see ship-stage-pause.test.ts).
+  // Stage 5 (2026-08-17): all three modes armed against exactly one campaign — now the live trial
+  // campaign `AdPilot Trial | ABO | Aug 2026` (52623496198420) rather than the retired smoke
+  // sandbox. The app side holds the same single id (execution-config.js), and the app's own
+  // driver + per-type modes remain OFF, so this arms scope, not execution.
   assert.equal(c.actionModes.pause, "auto");
   assert.equal(c.actionModes.adjust_adset_budget, "auto");
   assert.equal(c.actionModes.publish_approved_creative, "auto");
-  assert.deepEqual(c.allowedCampaignIds, ["52623318982420"]);
+  assert.deepEqual(c.allowedCampaignIds, ["52623496198420"]);
 });
 
 test("a non-IANA accountTimezone is refused at config load (boot), not at decision time", () => {

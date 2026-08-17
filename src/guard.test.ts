@@ -652,11 +652,14 @@ test("campaign scope: exact id match only — a neighbouring id does not pass", 
   expectRefuse(d, "campaign_scope_mismatch");
 });
 
-test("campaign scope: the SHIPPED config allows exactly the smoke-test sandbox campaign", async () => {
-  // Stage 2: the one allowed campaign is the PAUSED sandbox in APS 2026 (52623318982420),
-  // created 2026-08-12 for the zero-spend smoke test. Nothing else is writable.
+test("campaign scope: the SHIPPED config allows exactly the trial campaign", async () => {
+  // Stage 5 (2026-08-17): the allowlist moves off the smoke sandbox (52623318982420, retired — its
+  // ad set is empty) onto the live trial campaign `AdPilot Trial | ABO | Aug 2026`
+  // (52623496198420, A$75/day ad set, A$600 campaign spend cap in Ads Manager). Still exactly ONE
+  // campaign: the one-campaign invariant is what contains every mistake to a campaign we chose.
   const shipped = (await import("./load-config.ts")).loadGuardConfig();
-  assert.deepEqual(shipped.allowedCampaignIds, ["52623318982420"]);
+  assert.deepEqual(shipped.allowedCampaignIds, ["52623496198420"]);
+  assert.equal(shipped.allowedCampaignIds?.length, 1);
 });
 
 // ---- publish is campaign-scoped too: its target cannot be proven in scope, so it fails closed ----
