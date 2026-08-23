@@ -183,9 +183,36 @@ test("budget zero or negative -> refuse (positivity is the only barrier: 0 skips
   expectRefuse(neg, "args_budget");
 });
 
-test("budget non-integer -> refuse", async () => {
-  const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 110.5 }, makeDeps());
+// RE-POINTED (was "budget non-integer -> refuse"). Whole-dollars-only was never the real property:
+// the tool schema declares dailyBudget in MAJOR units and the doer already converts with
+// Math.round(x * 100), so cents are representable end to end. Whole dollars only made the app's
+// ordinary 18% step (A$75 -> A$88.50) unexpressible, which refused the first real production write.
+// The property that actually matters is that the amount must be an exact number of CENTS.
+test("budget finer than one cent -> refuse", async () => {
+  const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 110.567 }, makeDeps());
   expectRefuse(d, "args_budget");
+});
+
+test("budget in exact cents is allowed -- the app's 18% step lands on cents", async () => {
+  const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 110.5 }, makeDeps());
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 110.5);
+});
+
+// Float representation must not be mistaken for sub-cent precision: 88.5 * 100 is exact, but a
+// value like 0.29 * 100 is 28.999999999999996 in IEEE-754, so the cent check compares with a
+// tolerance rather than demanding an exactly-integral product.
+test("budget whose cents product is inexact in floating point is still allowed", async () => {
+  const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: 100.29 }, makeDeps());
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 100.29);
+});
+
+test("budget NaN or Infinity -> refuse", async () => {
+  for (const v of [NaN, Infinity, -Infinity]) {
+    const d = await evaluate("adjust_adset_budget", { entityId: "as_1", dailyBudget: v }, makeDeps());
+    expectRefuse(d, "args_budget");
+  }
 });
 
 // ---- budget locus / baseline ----
@@ -509,12 +536,30 @@ test("cross-day creep refuses exactly at 2x the 30d baseline (increase)", async 
   expectRefuse(d, "cross_day_creep");
 });
 
-// ---- floor-before-caps actually floors a fractional clamp ----
-test("a fractional +25% clamp is floored to an integer before being returned", async () => {
-  // baseline 110 -> maxUp 137.5 -> floor 137
+// ---- floor-before-caps still floors, but to a CENT, and never rounds UP past the ceiling ----
+// RE-POINTED (was "...floored to an integer..."). The property under test is not "integer" but
+// "never above the ceiling, and never finer than a cent". A whole-dollar floor also silently
+// altered an approved amount (A$88.50 -> A$88), so the unit moved; the direction did not.
+test("a fractional +25% clamp is floored to a whole cent, never rounded up", async () => {
+  // baseline 110 -> maxUp 137.5, which is already whole cents -> returned as-is, not raised
   const d = await evaluate("adjust_adset_budget", budget(200), makeDeps({ db: { startOfDayBudget: async () => 110 } }));
   expectAllow(d);
-  assert.equal(d.effectiveArgs.dailyBudget, 137);
+  assert.equal(d.effectiveArgs.dailyBudget, 137.5);
+});
+
+test("a clamp ceiling finer than a cent is floored DOWN to the cent, never up", async () => {
+  // baseline 100.001 -> maxUp 125.00125 -> must floor to 125.00, never 125.01
+  const d = await evaluate("adjust_adset_budget", budget(200), makeDeps({ db: { startOfDayBudget: async () => 100.001 } }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 125);
+});
+
+// The production case end to end: the app's 18% step off A$75 is A$88.50, and the guard must return
+// exactly that -- the value written must equal the value a human approved.
+test("the approved A$88.50 survives the clamp unchanged", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(88.5), makeDeps({ db: { startOfDayBudget: async () => 75 } }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 88.5);
 });
 
 // ---- fail-closed on a non-object args bag (must not throw) ----

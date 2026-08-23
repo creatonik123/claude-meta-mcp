@@ -126,6 +126,20 @@ function isFinitePositive(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n > 0;
 }
 
+// A money amount in MAJOR units must resolve to a whole number of minor units. The tool schema
+// declares dailyBudget in major units and the doer writes Math.round(major * offset), so anything
+// finer than one cent would be silently rounded on the way to Meta -- the written value would not be
+// the approved value. Demanding a whole DOLLAR instead was too strict in the other direction: it made
+// the app's ordinary 18% step (A$75 -> A$88.50) unexpressible and refused the first real production
+// write. The comparison uses a tolerance because an exact decimal like 100.29 is not exactly
+// representable in IEEE-754 (100.29 * 100 === 10028.999999999998).
+const CENTS_PER_UNIT = 100;
+const CENT_EPSILON = 1e-6;
+function isWholeCents(n: number): boolean {
+  const minor = n * CENTS_PER_UNIT;
+  return Math.abs(minor - Math.round(minor)) < CENT_EPSILON;
+}
+
 // Calendar date in the ACCOUNT's timezone (not UTC). Start-of-day baselines and
 // "spent today" must align with how Meta reports the account, or a decision near
 // UTC-midnight reads the wrong day. Throws on an unusable tz (caller fails closed).
@@ -334,8 +348,8 @@ function validateArgs(action: ActionType, args: Record<string, unknown>): Decisi
     const extra = keys.filter((k) => !allowed.has(k));
     if (extra.length) return refuse("args_extra", `budget accepts only entityId+dailyBudget; got extra: ${extra.join(",")}`);
     if (typeof args.entityId !== "string" || args.entityId === "") return refuse("args_entity", "entityId required");
-    if (!isFinitePositive(args.dailyBudget) || !Number.isInteger(args.dailyBudget)) {
-      return refuse("args_budget", "dailyBudget must be a finite positive integer");
+    if (!isFinitePositive(args.dailyBudget) || !isWholeCents(args.dailyBudget)) {
+      return refuse("args_budget", "dailyBudget must be a finite positive amount in whole cents");
     }
     return null;
   }
@@ -409,10 +423,17 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
   }
 
   // Cap increases at +maxSingleChangePct vs the start-of-day budget. Decreases
-  // pass through unchanged (less spend = safe). Floor to a whole number first
-  // so the caps check the exact value we'd write.
+  // pass through unchanged (less spend = safe). Floor to a whole CENT first so
+  // the caps check the exact value we'd write.
+  //
+  // Flooring to a whole DOLLAR here silently changed the amount: an approved
+  // A$88.50 was written to Meta as A$88, the read-back compared against the
+  // clamped value and reported executed_verified, so the discrepancy was
+  // invisible on both sides. Cents are the smallest unit Meta accepts (the doer
+  // writes Math.round(major * 100)), so flooring to a cent is the finest floor
+  // that still cannot round UP past the cap.
   const maxUp = baseline * (1 + bc.maxSingleChangePct / 100);
-  const clamped = Math.floor(Math.min(requested, maxUp));
+  const clamped = Math.floor(Math.min(requested, maxUp) * CENTS_PER_UNIT) / CENTS_PER_UNIT;
   // raisesLive: above the entity's CURRENT live budget. Every value ceiling
   // (cross-day creep, account cap, spend caps) gates on it — live spend
   // capacity is what those ceilings protect. A write at/below the frozen SoD
