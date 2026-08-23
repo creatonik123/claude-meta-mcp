@@ -270,3 +270,79 @@ test("the idempotency check throws -> fail-closed, NO write", async () => {
   assert.equal(writer.calls.length, 0);
   assert.equal(result.executed, false);
 });
+
+// ---- Dry run: exercise the whole write path against Meta WITHOUT applying anything -------------
+//
+// Meta honours `execution_options=["validate_only"]` on an ad set update: it validates the request
+// and returns success without changing the entity (verified live against the trial ad set on
+// 2026-08-23 -- daily_budget and updated_time both unchanged after a validate-only POST of a
+// DIFFERENT value). That closes the gap that made "the only way to test a write is to write" true.
+//
+// Safety properties asserted here, because a dry run that could apply is worse than no dry run:
+//   * the validate-only flag is ALWAYS present on the body -- never optional, never caller-supplied
+//   * no lock, no idempotency mark: a dry run must leave no trace that changes later behaviour
+//   * executed:false, so executionAuditEntry records `not_executed` and the app can never read it
+//     as a possible write (it is absent from MAYBE_WROTE_STATUSES)
+//   * a guard REFUSAL still refuses -- a dry run is not a way around the guard
+
+test("dry run POSTs the real body plus Meta's validate-only flag", async () => {
+  const writer = fakeWriter();
+  const result = await executeDecision("adjust_adset_budget", allowedBudget, deps({ writer, validateOnly: true }));
+  assert.equal(writer.calls.length, 1);
+  assert.equal(writer.calls[0].path, "/23890");
+  assert.deepEqual(writer.calls[0].body, { daily_budget: 5000, execution_options: '["validate_only"]' });
+  assert.equal(result.executed, false);
+});
+
+test("dry run reports itself as a dry run, and as validated when Meta accepts", async () => {
+  const result = await executeDecision("adjust_adset_budget", allowedBudget, deps({ validateOnly: true }));
+  assert.equal(result.executed, false);
+  assert.equal((result as { dryRun?: boolean }).dryRun, true);
+  assert.equal((result as { validated?: boolean }).validated, true);
+});
+
+test("dry run reports validated:false when Meta rejects the request", async () => {
+  const writer = { calls: [] as Array<{ path: string; body: Record<string, unknown> }>, async post(path: string, body: Record<string, unknown>) { this.calls.push({ path, body }); throw new Error("(#100) Invalid parameter"); } };
+  const result = await executeDecision("adjust_adset_budget", allowedBudget, deps({ writer, validateOnly: true }));
+  assert.equal(result.executed, false);
+  assert.equal((result as { dryRun?: boolean }).dryRun, true);
+  assert.equal((result as { validated?: boolean }).validated, false);
+  if (result.executed === false) assert.match(result.reason, /Invalid parameter/);
+});
+
+test("dry run takes NO lock and marks NOTHING applied -- it must leave no trace", async () => {
+  const coordinator = fakeCoordinator();
+  await executeDecision("adjust_adset_budget", allowedBudget, deps({ coordinator, validateOnly: true }));
+  assert.deepEqual(coordinator.log.acquired, []);
+  assert.deepEqual(coordinator.log.marked, []);
+  assert.deepEqual(coordinator.log.released, []);
+});
+
+test("dry run never reads back -- nothing changed, so there is nothing to verify", async () => {
+  const reader = { calls: 0, async get() { this.calls++; return { daily_budget: "5000" }; } };
+  await executeDecision("adjust_adset_budget", allowedBudget, deps({ reader, validateOnly: true }));
+  assert.equal(reader.calls, 0);
+});
+
+test("dry run still respects a guard refusal -- it is not a bypass", async () => {
+  const writer = fakeWriter();
+  const refused: Decision = { allowed: false, code: "account_cap", reason: "over the day ceiling" };
+  const result = await executeDecision("adjust_adset_budget", refused, deps({ writer, validateOnly: true }));
+  assert.equal(writer.calls.length, 0);
+  assert.equal(result.executed, false);
+});
+
+test("dry run still respects the execution-disabled switch", async () => {
+  const writer = fakeWriter();
+  const result = await executeDecision("adjust_adset_budget", allowedBudget, deps({ executionEnabled: false, writer, validateOnly: true }));
+  assert.equal(writer.calls.length, 0);
+  assert.equal(result.executed, false);
+});
+
+test("WITHOUT the flag the write path is unchanged -- no validate-only leaks into a real write", async () => {
+  const writer = fakeWriter();
+  const result = await executeDecision("adjust_adset_budget", allowedBudget, deps({ writer, reader: fakeReader({ daily_budget: "5000" }) }));
+  assert.deepEqual(writer.calls[0].body, { daily_budget: 5000 });
+  assert.ok(!("execution_options" in writer.calls[0].body));
+  assert.equal(result.executed, true);
+});

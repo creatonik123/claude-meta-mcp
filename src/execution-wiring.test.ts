@@ -5,6 +5,7 @@ import {
   currencyOffsetFor,
   buildExecutionDeps,
   registerGatedWriteTools,
+  TOOL_DEFS,
   wireExecution,
   withDayScopedDedupe,
   ACCOUNT_BUDGET_LOCK,
@@ -460,4 +461,64 @@ test("a malformed entityId is refused by the guard, not thrown", async () => {
   const payload = JSON.parse(res.content[0].text);
   assert.equal(payload.decision.allowed, false);
   assert.equal(payload.decision.code, "args_entity");
+});
+
+// ---- rehearsal (validateOnly): the whole real chain, nothing applied ---------------------------
+
+test("validateOnly is offered on the budget tool but NEVER reaches the guard's args", async () => {
+  // The guard refuses any key beyond entityId+dailyBudget (args_extra), so if rehearsal ever leaked
+  // into guardArgs every dry run would refuse — and, worse, a future reader would 'fix' it by
+  // loosening the guard's arg check. Pinning both halves here keeps that pressure off the guard.
+  const def = TOOL_DEFS.find((d) => d.name === "adjust_adset_budget");
+  assert.ok(def, "adjust_adset_budget must be defined");
+  assert.ok("validateOnly" in def.inputSchema, "the tool must offer validateOnly");
+  const guardArgs = def.guardArgs({ entityId: "as_1", dailyBudget: 88.5, validateOnly: true });
+  assert.deepEqual(Object.keys(guardArgs).sort(), ["dailyBudget", "entityId"]);
+});
+
+test("a rehearsal runs the REAL guard decision and sends Meta the validate-only flag", async () => {
+  const mcp = fakeMcp();
+  const audits: AuditEntry[] = [];
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
+
+  const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110, validateOnly: true })) as { content: Array<{ text: string }> };
+  const payload = JSON.parse(res.content[0].text);
+  assert.equal(payload.decision.allowed, true, "the real guard must still decide");
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].body.execution_options, '["validate_only"]');
+  assert.equal(writes[0].body.daily_budget, 11000);
+  assert.equal(payload.execution.executed, false);
+  assert.equal(payload.execution.dryRun, true);
+  // Audited as not_executed: the app's maybe-wrote set must never contain a rehearsal.
+  const row = audits.find((a) => a.result === "not_executed");
+  assert.ok(row, "a rehearsal must be audited as not_executed");
+});
+
+test("a non-boolean validateOnly does NOT arm a rehearsal — it performs the real write", async () => {
+  const mcp = fakeMcp();
+  const audits: AuditEntry[] = [];
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
+
+  const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110, validateOnly: "yes" })) as { content: Array<{ text: string }> };
+  const payload = JSON.parse(res.content[0].text);
+  assert.ok(!("execution_options" in writes[0].body), "a truthy string must not be read as a rehearsal");
+  assert.equal(payload.execution.executed, true);
+});
+
+test("without validateOnly the budget write is unchanged — no flag, real write, verified", async () => {
+  const mcp = fakeMcp();
+  const audits: AuditEntry[] = [];
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
+
+  const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110 })) as { content: Array<{ text: string }> };
+  const payload = JSON.parse(res.content[0].text);
+  assert.deepEqual(writes[0].body, { daily_budget: 11000 });
+  assert.equal(payload.execution.executed, true);
+  assert.equal(payload.execution.verified, true);
 });

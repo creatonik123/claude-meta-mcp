@@ -207,7 +207,7 @@ export function buildExecutionDeps(
 // fields a caller smuggles in never reach the guard or the write path.
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
-const TOOL_DEFS: Array<{
+export const TOOL_DEFS: Array<{
   name: string;
   description: string;
   inputSchema: Record<string, z.ZodTypeAny>;
@@ -227,7 +227,14 @@ const TOOL_DEFS: Array<{
     inputSchema: {
       entityId: z.string().min(1).describe("Ad set id"),
       dailyBudget: z.number().describe("Requested daily budget, major units"),
+      validateOnly: z
+        .boolean()
+        .optional()
+        .describe("Rehearse only: run every guard check and ask Meta to validate the write without applying it. Nothing changes."),
     },
+    // validateOnly is DELIBERATELY absent from guardArgs. The guard's own validator refuses any key
+    // beyond entityId+dailyBudget (args_extra), and rehearsal is a transport concern, not part of the
+    // decision — so the args the guard sees stay byte-for-byte what they were before this flag existed.
     guardArgs: (a) => ({ entityId: str(a.entityId), dailyBudget: a.dailyBudget }),
   },
   {
@@ -252,12 +259,15 @@ export function registerGatedWriteTools(
 ): string[] {
   const registered: string[] = [];
 
-  const decideAndExecute = async (action: ActionType, guardArgs: Record<string, unknown>) => {
+  const decideAndExecute = async (action: ActionType, guardArgs: Record<string, unknown>, validateOnly = false) => {
     // Decision first (always audited); execution only on an allow. An
     // unlogged allow is downgraded to a refusal inside runGuardedDecision.
     const decision = await runGuardedDecision(action, guardArgs, deps.guardDeps, deps.audit);
+    // A rehearsal only ever ADDS the validate-only flag; every other dep is the real one, so the
+    // decision, the clamps and the body are the production ones and not a parallel code path.
+    const doerDeps = validateOnly === true ? { ...deps.doerDeps, validateOnly: true } : deps.doerDeps;
     const outcome = decision.allowed
-      ? await executeAndAudit(action, decision, deps.doerDeps, deps.audit, deps.guardDeps.now)
+      ? await executeAndAudit(action, decision, doerDeps, deps.audit, deps.guardDeps.now)
       : null;
     const payload = {
       decision,
@@ -303,6 +313,9 @@ export function registerGatedWriteTools(
       { description: def.description, inputSchema: def.inputSchema },
       async (args: Record<string, unknown>) => {
         const guardArgs = def.guardArgs(args ?? {});
+        // Only ever true when the caller explicitly passed the boolean true — a truthy string or 1
+        // must not arm a rehearsal by accident, and the schema already rejects non-booleans.
+        const validateOnly = (args ?? {}).validateOnly === true;
         if (action !== "adjust_adset_budget") {
           return decideAndExecute(action, guardArgs);
         }
@@ -325,7 +338,7 @@ export function registerGatedWriteTools(
           );
         }
         try {
-          return await decideAndExecute(action, guardArgs);
+          return await decideAndExecute(action, guardArgs, validateOnly);
         } finally {
           try {
             await lock.release();

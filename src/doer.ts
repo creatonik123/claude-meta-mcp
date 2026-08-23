@@ -55,10 +55,19 @@ export interface DoerDeps {
   // for AUD, 1 for zero-decimal currencies like JPY. Read from the account, never
   // assumed: guessing it would mis-budget by up to 100x.
   currencyOffset: number;
+  // REHEARSE the write instead of performing it: the full guard decision runs, the real body is
+  // built and sent to Meta with `execution_options=["validate_only"]`, and Meta validates it without
+  // changing anything. Absent/false = a normal write, byte-for-byte unchanged.
+  //
+  // The flag can only make the system do LESS, so a mistake in either direction is safe: set when a
+  // write was intended, nothing happens; unset when a rehearsal was intended, the existing approval
+  // and guard checks still gate the write exactly as before.
+  validateOnly?: boolean;
 }
 
 export type ExecutionResult =
   | { executed: false; reason: string }
+  | { executed: false; reason: string; dryRun: true; validated: boolean; wrote: { path: string; body: Record<string, unknown> } }
   | { executed: true; verified: true; wrote: { path: string; body: Record<string, unknown> }; result: unknown }
   | { executed: true; verified: false; wrote: { path: string; body: Record<string, unknown> }; result: unknown; reconcile: string };
 
@@ -112,6 +121,16 @@ function translate(
     throw new Error("publish_approved_creative is executed by doer-publish.ts (executePublish), not translate()");
   }
   throw new Error(`unsupported action '${action}'`);
+}
+
+// Meta's own request validator: it checks the request exactly as a real one and returns success
+// WITHOUT applying it. Form-encoded, so the value is the JSON array as a string.
+//
+// Built HERE, from the translation, rather than accepted from a caller: a dry run whose flag could
+// be dropped anywhere on the way to Meta would be a real write wearing a rehearsal's label.
+const VALIDATE_ONLY = '["validate_only"]';
+function validateOnlyBody(body: Record<string, string | number | boolean | undefined>) {
+  return { ...body, execution_options: VALIDATE_ONLY };
 }
 
 /**
@@ -197,6 +216,35 @@ export async function executeDecision(
   }
 
   const wrote = { path: call.path, body: call.body as Record<string, unknown> };
+
+  // REHEARSAL. Deliberately placed BEFORE the lock and the idempotency check: a dry run changes
+  // nothing, so it must not serialize a real write behind it, must not consume the dedupe key that a
+  // subsequent real write depends on, and must not mark anything applied. It also never reads back —
+  // there is nothing to verify — and returns executed:false, so executionAuditEntry records it as
+  // `not_executed`, a status the app never counts as a possible write.
+  if (deps.validateOnly === true) {
+    const body = validateOnlyBody(call.body);
+    try {
+      const result = await deps.writer.post(call.path, body);
+      return {
+        executed: false,
+        dryRun: true,
+        validated: true,
+        wrote: { path: call.path, body },
+        reason: `dry run: Meta validated this write without applying it (${JSON.stringify(result)})`,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        executed: false,
+        dryRun: true,
+        validated: false,
+        wrote: { path: call.path, body },
+        reason: `dry run: Meta REJECTED this write (nothing was applied): ${msg}`,
+      };
+    }
+  }
+
   // Per-entity single-flight lock; dedupe key is the exact write (so a different
   // value is not deduped, but the same one re-applied is skipped).
   const lockKey = call.verify.entityId;
