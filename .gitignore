@@ -8,3 +8,7 @@ dist/
 .vscode/
 coverage/
 *.tsbuildinfo
+
+# Backups of .env contain LIVE credentials. Never committable.
+.env.bak-*
+.env.bak
