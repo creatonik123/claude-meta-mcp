@@ -273,9 +273,21 @@ async function evaluateInner(
     const scoped = await checkEntityScope(target, { config, meta });
     if (scoped) return scoped;
 
-    // Only the approvalHash reaches the executor. The doer resolves the destination from the same
-    // approval record, so no caller-supplied id can influence where the creative lands.
-    return { allowed: true, effectiveArgs: { approvalHash: hash } };
+    // Only the approvalHash and — when one was supplied — the COMPANION rendering's hash reach the
+    // executor. The doer still resolves the DESTINATION from the primary approval record alone, so no
+    // caller-supplied id can influence where the creative lands: a companion hash names a second
+    // image, never a target, and the publisher independently verifies it belongs to the same approved
+    // creative (same words, destination, form, page; a different image) before using it.
+    //
+    // A malformed or self-referential companion is DROPPED rather than refused: the primary is
+    // independently approved, and losing the whole ad is worse than losing one of its renderings. The
+    // doer refuses a malformed companion as a second layer, and a spent one is dropped there too.
+    const companion = typeof args.companionHash === "string" ? args.companionHash.trim() : "";
+    const companionOk = /^[0-9a-f]{64}$/.test(companion) && companion !== hash;
+    return {
+      allowed: true,
+      effectiveArgs: { approvalHash: hash, ...(companionOk ? { companionHash: companion } : {}) },
+    };
   }
 
   return refuse("unknown_action", `unknown action '${action}'`);
@@ -354,9 +366,14 @@ function validateArgs(action: ActionType, args: Record<string, unknown>): Decisi
     return null;
   }
   if (action === "publish_approved_creative") {
-    const allowed = new Set(["approvalHash"]);
+    // `companionHash` is the OTHER RENDERING of the same approved creative, so ONE ad carries both the
+    // square and the vertical. It is the ONLY field added to this set: it names a second approved
+    // image and can never name a destination, which is what this strictness protects. Its VALUE is
+    // validated downstream — malformed or self-referential companions are dropped when effectiveArgs
+    // is built, and the publisher refuses one whose composition does not match the primary's.
+    const allowed = new Set(["approvalHash", "companionHash"]);
     const extra = keys.filter((k) => !allowed.has(k));
-    if (extra.length) return refuse("args_extra", `publish accepts only approvalHash; got extra: ${extra.join(",")}`);
+    if (extra.length) return refuse("args_extra", `publish accepts only approvalHash+companionHash; got extra: ${extra.join(",")}`);
     if (typeof args.approvalHash !== "string" || args.approvalHash === "") {
       return refuse("args_approval", "approvalHash required");
     }

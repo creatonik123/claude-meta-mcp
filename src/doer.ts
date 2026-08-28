@@ -169,9 +169,25 @@ async function runPublish(decision: Decision, deps: DoerDeps): Promise<Execution
     return { executed: false, reason: "approval record carries no target ad set — publish destination unprovable" };
   }
 
+  // The COMPANION rendering, when the guard let one through. The destination is still `target`, read
+  // from the PRIMARY approval record — a companion names a second approved image and never a target.
+  const companionHash = typeof args.companionHash === "string" ? args.companionHash.trim() : "";
+
   const r = await executePublish(
-    { approvalHash: hash, targetEntityId: target },
-    { executionEnabled: deps.executionEnabled, coordinator: deps.coordinator, publisher: wiring.publisher, consumeApproval: wiring.consumeApproval }
+    { approvalHash: hash, targetEntityId: target, ...(companionHash ? { companionHash } : {}) },
+    {
+      executionEnabled: deps.executionEnabled,
+      coordinator: deps.coordinator,
+      publisher: wiring.publisher,
+      consumeApproval: wiring.consumeApproval,
+      // Freshness of the COMPANION only, through the same reader that already answered for the
+      // primary above. A spent companion means that image is already live in another ad. Anything
+      // unreadable counts as spent, so the companion is dropped rather than risked.
+      isApprovalConsumed: async (h: string) => {
+        const a = await wiring.approvalByHash(h);
+        return !a || a.consumed !== false;
+      },
+    }
   );
 
   // Map the publish outcome onto the doer's shared result shape. `wrote` describes the creation for the

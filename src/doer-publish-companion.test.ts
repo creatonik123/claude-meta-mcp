@@ -22,6 +22,9 @@ function deps(over: Partial<PublishDeps> = {}) {
     executionEnabled: true,
     coordinator: { acquire: async () => true, release: async () => {} },
     consumeApproval: async (hash: string, ref: string) => { consumed.push({ hash, ref }); },
+    // Added 2026-08-28: the companion must also be proven UNSPENT, and the check is fail-closed — an
+    // absent one drops the companion. Production supplies it; these cases describe a fresh companion.
+    isApprovalConsumed: async () => false,
     publisher: {
       searchAdsInAdset: async () => {
         searchCalls++;

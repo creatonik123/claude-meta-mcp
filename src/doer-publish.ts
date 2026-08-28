@@ -43,6 +43,11 @@ export interface PublishDeps {
   publisher: AdPublisher;
   // Records that this approval is spent and which ad it produced. One append (app migration 0011).
   consumeApproval(bindingHash: string, publishedRef: string): Promise<{ consumed: boolean }>;
+  // Whether an approval has already been spent. Used ONLY for the companion rendering: a spent
+  // companion means that image is already live in another ad. Optional in the type, but treated as
+  // fail-closed at the call site — an absent or throwing check drops the companion rather than
+  // assuming it is fresh.
+  isApprovalConsumed?(bindingHash: string): Promise<boolean>;
 }
 
 export type PublishExecution =
@@ -92,7 +97,31 @@ export async function executePublish(
       return { executed: false, reason: "companion approval equals the primary — no ad created" };
     }
   }
-  const hasCompanion = companion !== "" && /^[0-9a-f]{64}$/.test(companion);
+  let hasCompanion = companion !== "" && /^[0-9a-f]{64}$/.test(companion);
+  // A companion must also still be UNSPENT. The app's worklist already excludes consumed approvals, so
+  // it should never send one — but "the caller would not do that" is the reasoning this layer exists to
+  // refuse. A spent companion means that rendering is already live in another ad, and putting it in a
+  // second one duplicates it.
+  //
+  // Fail-closed toward DROPPING THE COMPANION, not toward refusing the publish: the primary is
+  // independently approved, and losing the whole ad is worse than losing one of its renderings. The
+  // companion stays unconsumed, and the app's own already-published check stops it publishing alone
+  // later.
+  if (hasCompanion) {
+    // Declared without an initialiser on purpose: every path below assigns it, so there is no default
+    // that could quietly become the answer. An earlier version initialised it to `true`, which was a
+    // dead store — a mutation flipping it changed nothing, meaning the fail-closed intent lived only
+    // in the branches, not in the declaration.
+    let companionSpent: boolean;
+    try {
+      companionSpent = typeof deps.isApprovalConsumed === "function"
+        ? (await deps.isApprovalConsumed(companion)) === true
+        : true;
+    } catch {
+      companionSpent = true;
+    }
+    if (companionSpent) hasCompanion = false;
+  }
 
   // The lock is on the APPROVAL. Two concurrent runs holding the same approval is the only way
   // search-before-create can be defeated.
