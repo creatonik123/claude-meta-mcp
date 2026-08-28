@@ -241,8 +241,19 @@ export const TOOL_DEFS: Array<{
     name: "publish_approved_creative",
     description:
       "Publish a creative that has an immutable, unconsumed approval record. Guarded: refused unless the approval exists and is unused.",
-    inputSchema: { approvalHash: z.string().min(1).describe("Approval record hash") },
-    guardArgs: (a) => ({ approvalHash: str(a.approvalHash) }),
+    // `companionHash` is the OTHER RENDERING of the same approved creative — the vertical to the
+    // primary's square — so ONE ad carries both instead of two ads carrying one each. OPTIONAL, because
+    // a creative approved in a single format must still publish exactly as before. The doer refuses a
+    // present-but-malformed value, and the publisher refuses one whose composition does not match the
+    // primary's words, destination, form and page.
+    inputSchema: {
+      approvalHash: z.string().min(1).describe("Approval record hash"),
+      companionHash: z.string().min(1).optional().describe("Approval record hash of the other rendering (vertical) of the same creative"),
+    },
+    guardArgs: (a) => ({
+      approvalHash: str(a.approvalHash),
+      ...(a.companionHash === undefined ? {} : { companionHash: str(a.companionHash) }),
+    }),
   },
 ];
 

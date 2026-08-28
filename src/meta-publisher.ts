@@ -75,6 +75,82 @@ function imageHashFrom(res: unknown): string | null {
   return null;
 }
 
+// The composition fields that must be IDENTICAL between two renderings of one creative. The image is
+// the only thing allowed to differ — everything a human read on the approval card must match, or the
+// two records are not two formats of one ad, they are two different ads.
+const COMPANION_MUST_MATCH: Array<keyof Composition> = ["cta", "headline", "link", "message", "page_id", "target_entity_id", "lead_gen_form_id"];
+
+// Verify a companion composition is genuinely the OTHER RENDERING of the same approved creative.
+// Throws rather than degrading: silently dropping an unverifiable companion would publish a
+// single-image ad while consuming both approvals, losing the vertical with no trace. An ABSENT
+// companion is a different case entirely and never reaches here — that is the ordinary one-format ad.
+function assertCompanion(primary: Composition, companion: Composition | null, primaryHash: string, companionHash: string): void {
+  if (companionHash.trim() === primaryHash.trim()) {
+    throw new Error("meta-publisher: companion hash equals the primary hash — refusing to publish");
+  }
+  if (!companion) {
+    throw new Error("meta-publisher: no approved composition for the companion rendering — refusing to publish");
+  }
+  for (const k of COMPANION_MUST_MATCH) {
+    // Compared as strings so undefined on one side and "" on the other cannot read as equal.
+    if (String(primary[k] ?? "") !== String(companion[k] ?? "")) {
+      throw new Error(`meta-publisher: companion rendering differs on ${k} — refusing to publish (these are not two formats of one creative)`);
+    }
+  }
+  if (!nonEmpty(companion.asset_sha256)) {
+    throw new Error("meta-publisher: companion rendering has no image — refusing to publish");
+  }
+  if (companion.asset_sha256 === primary.asset_sha256) {
+    throw new Error("meta-publisher: companion rendering carries the SAME image as the primary — refusing to publish");
+  }
+}
+
+// The placement-customised creative body. THE SHAPE IS PROVEN, not inferred: verified against the live
+// account on 2026-08-28 (creative created, read back, deleted; no ad created). Two Meta rejections
+// shaped it and both constraints are load-bearing:
+//   * subcode 1885923 — a DEFAULT rule with an EMPTY customization_spec is REQUIRED. It is the catch-all
+//     for every placement no other rule names, and it carries the SQUARE, which is the rendering the
+//     approval card previewed.
+//   * subcode 2446501 "Invalid Targeting Rule For Localization By Location Ad" — labelling and
+//     referencing several asset types per rule switches Meta into the location-localization mode, which
+//     then demands geolocation in every non-default rule. So ONLY THE IMAGE CARRIES A LABEL; the copy,
+//     link and CTA are single unlabelled assets. That is also correct on its own terms: the approval
+//     sealed ONE set of words for both renderings.
+// A feed rule is deliberately NOT emitted — the empty default already covers feed and everything else.
+function twoFormatCreative(name: string, comp: Composition, squareHash: string, verticalHash: string, callToAction: Record<string, unknown>) {
+  const SQ = "apx_square";
+  const VT = "apx_vertical";
+  return {
+    name,
+    // Page only. link_data here would compete with the feed spec for the same slots.
+    object_story_spec: { page_id: comp.page_id },
+    asset_feed_spec: {
+      images: [
+        { hash: squareHash, adlabels: [{ name: SQ }] },
+        { hash: verticalHash, adlabels: [{ name: VT }] },
+      ],
+      bodies: [{ text: comp.message }],
+      titles: [{ text: comp.headline }],
+      link_urls: [{ website_url: comp.link }],
+      ad_formats: ["SINGLE_IMAGE"],
+      call_to_action_types: [String((callToAction as { type?: unknown }).type ?? "LEARN_MORE")],
+      call_to_actions: [callToAction],
+      asset_customization_rules: [
+        {
+          customization_spec: {
+            publisher_platforms: ["facebook", "instagram"],
+            facebook_positions: ["story"],
+            instagram_positions: ["story"],
+          },
+          image_label: { name: VT },
+        },
+        // The required default, lowest priority, empty spec.
+        { customization_spec: {}, image_label: { name: SQ } },
+      ],
+    },
+  };
+}
+
 export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
   return {
     async searchAdsInAdset({ adsetId, adName }): Promise<AdRow[]> {
@@ -92,7 +168,7 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
       return data as AdRow[];
     },
 
-    async createAd({ adsetId, name, approvalHash }) {
+    async createAd({ adsetId, name, approvalHash, companionHash }) {
       if (!nonEmpty(name)) throw new Error("meta-publisher: refusing to create an ad with no name — the name is the idempotency key");
       if (!nonEmpty(adsetId)) throw new Error("meta-publisher: refusing to create an ad with no target ad set");
 
@@ -117,6 +193,29 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
       const imageHash = imageHashFrom(uploaded);
       if (!imageHash) throw new Error("meta-publisher: upload returned no image hash — refusing to build a creative");
 
+      // 3b. The OTHER RENDERING, when one was approved. Both formats belong in ONE ad: the approver
+      //     approved one ad, and publishing a second ad for the second format is what produced the
+      //     duplicate on 27 Aug. An absent companion is the ordinary single-format ad and changes
+      //     nothing below; a companion that cannot be VERIFIED throws, because a silent fallback
+      //     would ship one image while both approvals were spent.
+      const wantCompanion = nonEmpty(companionHash);
+      let companionImageHash: string | null = null;
+      if (wantCompanion) {
+        const companion = await deps.readComposition(companionHash as string);
+        assertCompanion(comp, companion, approvalHash, companionHash as string);
+        const companionAsset = await deps.readAsset((companion as Composition).asset_sha256);
+        if (!companionAsset || !Buffer.isBuffer(companionAsset.bytes) || companionAsset.bytes.length === 0) {
+          throw new Error("meta-publisher: companion rendering's image asset is missing or empty — refusing to publish");
+        }
+        const companionUploaded = await deps.post(`/${deps.accountId}/adimages`, {
+          bytes: companionAsset.bytes.toString("base64"),
+        });
+        companionImageHash = imageHashFrom(companionUploaded);
+        if (!companionImageHash) {
+          throw new Error("meta-publisher: companion upload returned no image hash — refusing to build a half creative");
+        }
+      }
+
       // 4. The creative. Also safe to repeat; a creative with no ad delivers nothing.
       //    With a sealed form: the CTA carries the form and the link leaves the CTA value (a lead ad
       //    collects in-form; the destination link stays on link_data). A BLANK form id is treated as
@@ -126,19 +225,24 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
         formId !== ""
           ? { type: "SIGN_UP", value: { lead_gen_form_id: formId } }
           : { type: "LEARN_MORE", value: { link: comp.link } };
-      const created = await deps.post(`/${deps.accountId}/adcreatives`, {
-        name,
-        object_story_spec: {
-          page_id: comp.page_id,
-          link_data: {
-            image_hash: imageHash,
-            link: comp.link,
-            message: comp.message,
-            name: comp.headline,
-            call_to_action: callToAction,
-          },
-        },
-      });
+      const created = await deps.post(
+        `/${deps.accountId}/adcreatives`,
+        companionImageHash
+          ? twoFormatCreative(name, comp, imageHash, companionImageHash, callToAction as Record<string, unknown>)
+          : {
+              name,
+              object_story_spec: {
+                page_id: comp.page_id,
+                link_data: {
+                  image_hash: imageHash,
+                  link: comp.link,
+                  message: comp.message,
+                  name: comp.headline,
+                  call_to_action: callToAction,
+                },
+              },
+            }
+      );
       const creativeId = (created as { id?: unknown } | null)?.id;
       if (!nonEmpty(creativeId)) throw new Error("meta-publisher: creative returned no creative id — refusing to create an ad");
 

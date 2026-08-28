@@ -159,17 +159,32 @@ test("a creative returning no id refuses rather than creating an ad with no crea
   await assert.rejects(() => publisher.createAd({ adsetId: ADSET, name: NAME, approvalHash: HASH }), /creative id/i);
 });
 
-test("NOTHING is retried: exactly three write call sites, and no retry construct", async () => {
-  // An earlier version of this test banned every `for`/`while`, which flagged the field-validation loop
-  // and the loop over Meta's image-response keys — neither is a retry. Banning all loops is not the
-  // property; "a write is never issued more than once" is. So: pin the number of write call sites and
-  // forbid retry/attempt machinery by name.
+test("NOTHING is retried: the write call sites are pinned BY EDGE, and no retry construct exists", async () => {
+  // An earlier version banned every `for`/`while`, which flagged the field-validation loop and the loop
+  // over Meta's image-response keys — neither is a retry. Banning all loops is not the property; "a
+  // write is never issued more than once" is.
+  //
+  // Updated 2026-08-28: a FOURTH write site was added — the companion rendering's image upload, so one
+  // ad can carry both the square and the vertical. A bare count would have had to be bumped from 3 to
+  // 4, which is exactly how this test would rot into a rubber stamp. So it now pins the sites BY EDGE
+  // instead. What actually matters is unchanged and is now stated directly: there is exactly ONE site
+  // that can create an AD, and exactly one that can create a creative. Image uploads are harmless to
+  // repeat (an orphan image delivers nothing), which is why two of them is not a safety change.
   const src = await import("node:fs").then((fs) =>
     fs.readFileSync(new URL("./meta-publisher.ts", import.meta.url), "utf8")
   );
   const code = src.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-  const writeSites = (code.match(/deps\.post\(/g) || []).length;
-  assert.equal(writeSites, 3, `expected exactly 3 write call sites (image, creative, ad); found ${writeSites}`);
+
+  const sites = code.match(/deps\.post\(\s*`[^`]*`/g) || [];
+  const adSites = sites.filter((s) => /\/ads\b/.test(s) || s.includes("/ads`"));
+  const creativeSites = sites.filter((s) => s.includes("/adcreatives"));
+  const imageSites = sites.filter((s) => s.includes("/adimages"));
+
+  assert.equal(adSites.length, 1, `exactly ONE ad-create site is the whole safety property; found ${adSites.length}`);
+  assert.equal(creativeSites.length, 1, `expected one adcreatives site; found ${creativeSites.length}`);
+  assert.equal(imageSites.length, 2, `expected two adimages sites (primary + companion); found ${imageSites.length}`);
+  assert.equal(sites.length, adSites.length + creativeSites.length + imageSites.length,
+    "an unrecognised write edge appeared — every deps.post site must be accounted for here");
   assert.doesNotMatch(code, /\bretry|\bretries|\battempt\b|\battempts\b|backoff/i, "a retry here could create a second live ad");
 });
 

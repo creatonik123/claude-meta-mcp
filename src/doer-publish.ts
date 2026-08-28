@@ -32,7 +32,9 @@ export interface AdPublisher {
   searchAdsInAdset(args: { adsetId: string; adName: string }): Promise<AdRow[]>;
   // Create exactly one ad under EXACTLY the given name. The name carries the approval's binding hash
   // and IS the idempotency key, so an implementation must never alter, prefix or truncate it.
-  createAd(args: { adsetId: string; name: string; approvalHash: string }): Promise<{ id: string }>;
+  // `companionHash`, when present, is the OTHER RENDERING of the same approved creative (the vertical
+  // to the primary's square). One ad carries both. Absent means an ordinary single-format ad.
+  createAd(args: { adsetId: string; name: string; approvalHash: string; companionHash?: string }): Promise<{ id: string }>;
 }
 
 export interface PublishDeps {
@@ -57,7 +59,7 @@ function createdId(res: unknown): string | null {
 }
 
 export async function executePublish(
-  { approvalHash, targetEntityId }: { approvalHash: string; targetEntityId: string },
+  { approvalHash, targetEntityId, companionHash }: { approvalHash: string; targetEntityId: string; companionHash?: string },
   deps: PublishDeps
 ): Promise<PublishExecution> {
   // Fail-safe: off unless explicitly enabled. An off switch must not even LOOK at Meta.
@@ -76,6 +78,21 @@ export async function executePublish(
   if (!/^[0-9a-f]{64}$/.test(hash) || adsetId === "") {
     return { executed: false, reason: "unusable approval hash or target ad set — no ad created" };
   }
+  // The OTHER RENDERING of the same approved creative, when one exists, so ONE ad carries both. Absent
+  // is the ordinary single-format ad. Present-but-unusable is refused HERE, before the lock and before
+  // any Meta call: a malformed companion means we do not know what the second image would be, and
+  // guessing is how an unapproved image reaches a live ad. Equal to the primary is refused too — that
+  // would ship the same picture twice and spend two approvals on one rendering.
+  const companion = typeof companionHash === "string" ? companionHash.trim() : "";
+  if (companionHash !== undefined) {
+    if (!/^[0-9a-f]{64}$/.test(companion)) {
+      return { executed: false, reason: "unusable companion approval hash — no ad created" };
+    }
+    if (companion === hash) {
+      return { executed: false, reason: "companion approval equals the primary — no ad created" };
+    }
+  }
+  const hasCompanion = companion !== "" && /^[0-9a-f]{64}$/.test(companion);
 
   // The lock is on the APPROVAL. Two concurrent runs holding the same approval is the only way
   // search-before-create can be defeated.
@@ -110,7 +127,7 @@ export async function executePublish(
     let res: unknown = null;
     let createError: string | null = null;
     try {
-      res = await deps.publisher.createAd({ adsetId: plan.adsetId!, name: plan.adName!, approvalHash: hash });
+      res = await deps.publisher.createAd({ adsetId: plan.adsetId!, name: plan.adName!, approvalHash: hash, ...(hasCompanion ? { companionHash: companion } : {}) });
     } catch (e) {
       createError = e instanceof Error ? e.message : String(e);
     }
@@ -138,8 +155,15 @@ export async function executePublish(
 
     // 4. Only now is the work durable and known. Consuming and recording which ad it produced are ONE
     //    append, so there is no window where the reference exists but the approval looks unused.
+    // BOTH approvals are consumed when one ad carried both renderings. Consuming only the primary
+    // would leave the companion unconsumed, and the next run would publish it as a SECOND ad — the
+    // exact duplicate this whole change exists to remove. Each failure is recorded rather than
+    // swallowed: an unconsumed approval is a republish waiting to happen, so an operator must see it.
     let consumeFailed = false;
     try { await deps.consumeApproval(hash, adId); } catch { consumeFailed = true; }
+    if (hasCompanion) {
+      try { await deps.consumeApproval(companion, adId); } catch { consumeFailed = true; }
+    }
     return { executed: true, verified: true, adId, adName: v.adName!, ...(consumeFailed ? { consumeFailed: true as const } : {}) };
   } finally {
     // Always release: a stuck lock would block this approval forever, and the next run is the very
