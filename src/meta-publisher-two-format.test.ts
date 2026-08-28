@@ -54,7 +54,10 @@ function deps(over: Partial<MetaPublisherDeps> = {}) {
       if (path.includes("/ads")) return { id: "ad_new" };
       return {};
     },
-    get: async () => ({ data: [] }),
+    // The page's linked Instagram account. Required from 2026-08-28: naming instagram_positions in a
+    // rule makes the ad target Instagram explicitly, and Meta then demands an identity (subcode
+    // 1772103). Production has one — @aps_au on the approved page.
+    get: async (p: string) => (String(p).includes("instagram") ? { instagram_business_account: { id: "17841458747656615" } } : { data: [] }),
     readComposition: async (h: string) => (h === COMPANION ? vertical : square),
     readAsset: async (sha: string) => ({
       bytes: Buffer.from(sha === VT_SHA ? "VERT-bytes" : "SQ-bytes"),

@@ -117,13 +117,46 @@ function assertCompanion(primary: Composition, companion: Composition | null, pr
 //     link and CTA are single unlabelled assets. That is also correct on its own terms: the approval
 //     sealed ONE set of words for both renderings.
 // A feed rule is deliberately NOT emitted — the empty default already covers feed and everything else.
-function twoFormatCreative(name: string, comp: Composition, squareHash: string, verticalHash: string, callToAction: Record<string, unknown>) {
+// The Instagram identity for a two-format creative.
+//
+// Naming `instagram_positions` in a customization rule makes the ad EXPLICITLY target Instagram, and
+// Meta then requires an Instagram identity on the creative. Proven live against this account:
+//   code 100 / subcode 1772103 — "Instagram account is missing. Select an Instagram account or
+//   Facebook Page to represent your business on Instagram."
+// The single-image path never names Instagram, so Meta supplies the identity itself (the working
+// creative in the trial ad set carries instagram_user_id unasked). Once we name it, we must too.
+//
+// Resolved from the PAGE the approval already carries — never a caller argument, never a constant —
+// so the identity can only ever be the one belonging to the page a human approved. Refuses rather
+// than guessing: an ad that names Instagram with no identity is refused by Meta anyway, so failing
+// here with a readable reason beats failing there with "Invalid parameter".
+async function instagramIdFor(pageId: string, deps: MetaPublisherDeps): Promise<string> {
+  let res: Record<string, unknown>;
+  try {
+    res = await deps.get(`/${pageId}?fields=instagram_business_account,connected_instagram_account`);
+  } catch (e) {
+    throw new Error(`meta-publisher: could not read the page's instagram account — refusing to publish (${e instanceof Error ? e.message : String(e)})`);
+  }
+  const pick = (v: unknown): string => {
+    const id = (v as { id?: unknown } | null)?.id;
+    return typeof id === "string" && id.trim() !== "" ? id.trim() : "";
+  };
+  const id = pick(res?.instagram_business_account) || pick(res?.connected_instagram_account);
+  if (!id) {
+    throw new Error("meta-publisher: the approved page has no linked instagram account, and this creative targets instagram — refusing to publish");
+  }
+  return id;
+}
+
+function twoFormatCreative(name: string, comp: Composition, squareHash: string, verticalHash: string, callToAction: Record<string, unknown>, instagramUserId: string) {
   const SQ = "apx_square";
   const VT = "apx_vertical";
   return {
     name,
     // Page only. link_data here would compete with the feed spec for the same slots.
     object_story_spec: { page_id: comp.page_id },
+    // Required because the rules below name instagram_positions. See instagramIdFor above.
+    instagram_user_id: instagramUserId,
     asset_feed_spec: {
       images: [
         { hash: squareHash, adlabels: [{ name: SQ }] },
@@ -200,6 +233,7 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
       //     would ship one image while both approvals were spent.
       const wantCompanion = nonEmpty(companionHash);
       let companionImageHash: string | null = null;
+      let instagramUserId = "";
       if (wantCompanion) {
         const companion = await deps.readComposition(companionHash as string);
         assertCompanion(comp, companion, approvalHash, companionHash as string);
@@ -214,6 +248,9 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
         if (!companionImageHash) {
           throw new Error("meta-publisher: companion upload returned no image hash — refusing to build a half creative");
         }
+        // Resolved ONLY on this path, so the single-image body — proven in production — is unchanged
+        // and costs no extra read.
+        instagramUserId = await instagramIdFor(comp.page_id, deps);
       }
 
       // 4. The creative. Also safe to repeat; a creative with no ad delivers nothing.
@@ -228,7 +265,7 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
       const created = await deps.post(
         `/${deps.accountId}/adcreatives`,
         companionImageHash
-          ? twoFormatCreative(name, comp, imageHash, companionImageHash, callToAction as Record<string, unknown>)
+          ? twoFormatCreative(name, comp, imageHash, companionImageHash, callToAction as Record<string, unknown>, instagramUserId)
           : {
               name,
               object_story_spec: {
