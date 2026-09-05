@@ -48,6 +48,7 @@ export const GATED_WRITE_TOOLS: ReadonlySet<string> = new Set<string>([
   "pause_entity",
   "adjust_adset_budget",
   "publish_approved_creative",
+  "activate_ad",
 ]);
 
 /**

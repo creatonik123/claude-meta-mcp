@@ -9,7 +9,7 @@ const baseConfig: GuardConfig = {
   allowedCampaignIds: ["120200123"],
   deniedAccountIds: ["act_1133075730765139"],
   accountTimezone: "Australia/North",
-  actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
+  actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto", activate: "auto" },
   killSwitchEnvFlag: "ADPILOT_KILL_ALL",
   budgetClamp: {
     maxSingleChangePct: 25,
@@ -40,7 +40,7 @@ function makeDeps(modeOff = false): GuardDeps {
       schemaVersion: async () => 1,
       killSwitchRow: async () => false,
       approvalByHash: async () => ({ consumed: false }),
-      startOfDayBudget: async () => 100,
+      publishedAdConsumption: async () => null,      startOfDayBudget: async () => 100,
       accountStartOfDayTotal: async () => 1000,
       budgetBaseline30d: async () => 1000,
     },

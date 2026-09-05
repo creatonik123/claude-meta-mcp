@@ -31,17 +31,17 @@ test("budget 'auto' with a one-campaign allowlist boots (stage 3, the zero-spend
 });
 
 test("budget 'auto' with an EMPTY allowlist refuses boot", () => {
-  const c = { ...base(), actionModes: { pause: "off" as const, adjust_adset_budget: "auto" as const, publish_approved_creative: "off" as const }, allowedCampaignIds: [] };
+  const c = { ...base(), actionModes: { pause: "off" as const, adjust_adset_budget: "auto" as const, publish_approved_creative: "off" as const, activate: "off" as const }, allowedCampaignIds: [] };
   assert.throws(() => assertShipInvariants(c), /allowedCampaignIds|allowlist/i);
 });
 
 test("publish 'auto' with a one-campaign allowlist boots (stage 4, seeded-approval smoke)", () => {
-  const c = { ...base(), actionModes: { ...base().actionModes, publish_approved_creative: "auto" as const }, allowedCampaignIds: ["52623318982420"] };
+  const c = { ...base(), actionModes: { ...base().actionModes, publish_approved_creative: "auto" as const, activate: "auto" as const }, allowedCampaignIds: ["52623318982420"] };
   assert.doesNotThrow(() => assertShipInvariants(c));
 });
 
 test("publish 'auto' with an EMPTY allowlist refuses boot", () => {
-  const c = { ...base(), actionModes: { pause: "off" as const, adjust_adset_budget: "off" as const, publish_approved_creative: "auto" as const }, allowedCampaignIds: [] };
+  const c = { ...base(), actionModes: { pause: "off" as const, adjust_adset_budget: "off" as const, publish_approved_creative: "auto" as const, activate: "auto" as const }, allowedCampaignIds: [] };
   assert.throws(() => assertShipInvariants(c), /allowedCampaignIds|allowlist/i);
 });
 

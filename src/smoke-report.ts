@@ -7,7 +7,7 @@
 // The complete gated write surface. Must match TOOL_TO_ACTION in execution-wiring.ts — a test
 // there pins that mapping; this list exists so the smoke test can tell "off", "on", and the
 // dangerous in-between apart.
-export const WRITE_TOOLS = ["pause_entity", "adjust_adset_budget", "publish_approved_creative"] as const;
+export const WRITE_TOOLS = ["pause_entity", "adjust_adset_budget", "publish_approved_creative", "activate_ad"] as const;
 
 export interface SurfaceAssessment {
   inert: boolean;

@@ -72,3 +72,11 @@ test("onRefused callback fires once per dropped write tool", () => {
   mcp.registerTool("delete_ad"); // dropped -> callback
   assert.deepEqual(refused, ["create_campaign", "delete_ad"]);
 });
+
+test("allowGatedWrites lets activate_ad through as the fourth gated tool", () => {
+  const { mcp } = fakeMcp();
+  const { registered } = installReadOnlyGate(mcp, undefined, { allowGatedWrites: true });
+  mcp.registerTool("activate_ad");
+  mcp.registerTool("update_ad");
+  assert.deepEqual(registered, ["activate_ad"]);
+});

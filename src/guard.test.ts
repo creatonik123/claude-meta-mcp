@@ -13,7 +13,7 @@ const baseConfig: GuardConfig = {
   managedAccountId: "act_2218833115522041",
   allowedCampaignIds: ["120200123"],
   deniedAccountIds: ["act_1133075730765139"],
-  actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
+  actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto", activate: "auto" },
   accountTimezone: "Australia/North",
   killSwitchEnvFlag: "ADPILOT_KILL_ALL",
   budgetClamp: {
@@ -52,7 +52,7 @@ function makeDeps(o: DeepOverrides = {}): GuardDeps {
       schemaVersion: async () => 1,
       killSwitchRow: async () => false,
       approvalByHash: async () => ({ consumed: false }),
-      startOfDayBudget: async () => 100,
+      publishedAdConsumption: async () => null,      startOfDayBudget: async () => 100,
       accountStartOfDayTotal: async () => 1000,
       budgetBaseline30d: async () => 1000, // high default so creep check doesn't fire
       ...(o.db ?? {}),
@@ -140,7 +140,7 @@ test("schema version mismatch -> refuse", async () => {
 
 // ---- action mode ----
 test("action mode off (recommend-only) -> refuse", async () => {
-  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({ config: { actionModes: { pause: "auto", adjust_adset_budget: "off", publish_approved_creative: "auto" } } }));
+  const d = await evaluate("adjust_adset_budget", budget(110), makeDeps({ config: { actionModes: { pause: "auto", adjust_adset_budget: "off", publish_approved_creative: "auto", activate: "auto" } } }));
   expectRefuse(d, "action_mode_off");
 });
 

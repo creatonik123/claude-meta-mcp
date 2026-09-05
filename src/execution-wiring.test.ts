@@ -42,13 +42,13 @@ function offConfig(): GuardConfig {
   // NOT the shipped config any more: since stage 2 the shipped file arms pause for the smoke-test
   // campaign. This fixture pins the all-off behaviour (mode off => refuse + audit) explicitly.
   const c = loadGuardConfig();
-  return { ...c, allowedCampaignIds: [], actionModes: { pause: "off", adjust_adset_budget: "off", publish_approved_creative: "off" } };
+  return { ...c, allowedCampaignIds: [], actionModes: { pause: "off", adjust_adset_budget: "off", publish_approved_creative: "off", activate: "off" } };
 }
 
 function autoConfig(): GuardConfig {
   const c = offConfig();
   // in-scope campaign so these tests exercise the doer/lock/schema paths, not campaign scope
-  return { ...c, allowedCampaignIds: ["120200123"], actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" } };
+  return { ...c, allowedCampaignIds: ["120200123"], actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto", activate: "auto" } };
 }
 
 function fakeGuardDeps(config: GuardConfig, audits: AuditEntry[]): { guardDeps: GuardDeps; audit: { write: (e: AuditEntry) => Promise<void> } } {
@@ -61,7 +61,7 @@ function fakeGuardDeps(config: GuardConfig, audits: AuditEntry[]): { guardDeps: 
         schemaVersion: async () => 1,
         killSwitchRow: async () => false,
         approvalByHash: async () => ({ consumed: false }),
-        startOfDayBudget: async () => 100,
+        publishedAdConsumption: async () => null,        startOfDayBudget: async () => 100,
         accountStartOfDayTotal: async () => 1000,
         budgetBaseline30d: async () => 1000,
       },
@@ -521,4 +521,16 @@ test("without validateOnly the budget write is unchanged — no flag, real write
   assert.deepEqual(writes[0].body, { daily_budget: 11000 });
   assert.equal(payload.execution.executed, true);
   assert.equal(payload.execution.verified, true);
+});
+
+test("TOOL_TO_ACTION maps activate_ad to the guard's 'activate' action, and the tool is gated (never a raw update_ad)", () => {
+  assert.equal(TOOL_TO_ACTION.activate_ad, "activate");
+  assert.ok(GATED_WRITE_TOOLS.has("activate_ad"));
+  assert.ok(!GATED_WRITE_TOOLS.has("update_ad"), "the raw upstream status write stays blocked");
+});
+test("activate_ad guardArgs pin status ACTIVE and forward only the entity id — a caller cannot smuggle a status", () => {
+  const def = TOOL_DEFS.find((d) => d.name === "activate_ad");
+  assert.ok(def, "activate_ad is a registered gated tool");
+  assert.deepEqual(def.guardArgs({ entityId: "ad_1", status: "PAUSED", name: "x" }), { entityId: "ad_1", status: "ACTIVE" });
+  assert.deepEqual(Object.keys(def.inputSchema), ["entityId"]);
 });
