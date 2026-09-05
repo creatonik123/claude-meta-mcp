@@ -37,6 +37,7 @@ export const TOOL_TO_ACTION: Record<string, ActionType> = {
   pause_entity: "pause",
   adjust_adset_budget: "adjust_adset_budget",
   publish_approved_creative: "publish_approved_creative",
+  activate_ad: "activate",
 };
 
 // Minor units per major unit, by account currency. Known currencies ONLY — a
@@ -254,6 +255,13 @@ export const TOOL_DEFS: Array<{
       approvalHash: str(a.approvalHash),
       ...(a.companionHash === undefined ? {} : { companionHash: str(a.companionHash) }),
     }),
+  },
+  {
+    name: "activate_ad",
+    description:
+      "Switch on an ad that THIS guard created PAUSED through publish_approved_creative within the last 7 days. Guarded: refused for any other ad, any ad set, any other campaign; kill switch and audit apply.",
+    inputSchema: { entityId: z.string().min(1).describe("Ad id returned by publish_approved_creative") },
+    guardArgs: (a) => ({ entityId: str(a.entityId), status: "ACTIVE" }),
   },
 ];
 

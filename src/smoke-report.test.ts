@@ -17,7 +17,7 @@ test("all-read surface -> inert:true, and the report says switch-on is the next 
   assert.match(a.summary, /ADPILOT_EXECUTION_ENABLED/);
 });
 
-test("all three write tools present -> armed:true", () => {
+test("all four write tools present -> armed:true", () => {
   const a = assessSurface(["get_campaigns", ...WRITE_TOOLS]);
   assert.equal(a.inert, false);
   assert.equal(a.armed, true);

@@ -93,6 +93,10 @@ function translate(
   if (action === "pause") {
     return { path: `/${entityId}`, body: { status: "PAUSED" }, verify: { entityId, field: "status", expected: "PAUSED" } };
   }
+  if (action === "activate") {
+    // The mirror of pause, verified on `status` for the same reason pause is.
+    return { path: `/${entityId}`, body: { status: "ACTIVE" }, verify: { entityId, field: "status", expected: "ACTIVE" } };
+  }
   if (action === "adjust_adset_budget") {
     // Meta wants the budget in minor units. The multiplier is the account's currency
     // offset (100 for AUD, 1 for zero-decimal currencies) — never assumed. A bad

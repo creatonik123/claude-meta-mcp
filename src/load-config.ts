@@ -34,6 +34,7 @@ const ConfigSchema = z
         pause: Mode,
         adjust_adset_budget: Mode,
         publish_approved_creative: Mode,
+        activate: Mode,
       })
       .strict(),
     killSwitchEnvFlag: z.string().min(1),
@@ -81,7 +82,8 @@ export function assertShipInvariants(config: GuardConfig): void {
   // Ship stage 3 (2026-08-12, the zero-spend smoke tests): `pause` and `adjust_adset_budget` may be
   // "auto" — both proven harmless inside the PAUSED sandbox campaign (a paused campaign cannot
   // deliver, so neither a pause nor a budget number can spend). stage 4 (same day) arms publish for the seeded-approval smoke: the ad is BORN PAUSED inside the PAUSED sandbox, double-locked — that review step IS the safety mechanism.
-  const MAY_ARM = new Set(["pause", "adjust_adset_budget", "publish_approved_creative"]);
+  // activate (2026-09-05): switches on an ad the guard itself published PAUSED, inside the one campaign.
+  const MAY_ARM = new Set(["pause", "adjust_adset_budget", "publish_approved_creative", "activate"]);
   const notOff = Object.entries(config.actionModes)
     .filter(([k, m]) => !(m === "off" || (MAY_ARM.has(k) && m === "auto")))
     .map(([k]) => k);

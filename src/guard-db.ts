@@ -77,6 +77,19 @@ export function createGuardDb(sql: Sql): GuardDb {
       const target = typeof r.target === "string" && r.target.trim() !== "" ? r.target.trim() : null;
       return { consumed: n > 0, targetEntityId: target };
     },
+    // Did THIS guard create the ad? The publish doer consumes the approval with the new ad id as
+    // published_ref, so the row is the proof of authorship — and its time bounds how long an
+    // activate may follow. An unreadable time throws (the guard refuses), never reads as "recent".
+    async publishedAdConsumption(adId: string) {
+      const id = typeof adId === "string" ? adId.trim() : "";
+      if (!id) throw new Error("guard-db: publishedAdConsumption needs an ad id");
+      const rows = await sql(`SELECT consumed_at FROM approval_consumptions WHERE published_ref = $1 ORDER BY consumed_at DESC LIMIT 1`, [id]);
+      if (rows.length === 0) return null;
+      const raw = rows[0].consumed_at;
+      const at = raw instanceof Date ? raw : typeof raw === "string" ? new Date(raw) : null;
+      if (!at || !Number.isFinite(at.getTime())) throw new Error("guard-db: unreadable consumed_at on approval_consumptions row");
+      return { consumedAt: at };
+    },
     async startOfDayBudget(entityId: string, day: string) {
       const rows = await sql(
         `SELECT daily_budget FROM execution_budget_snapshots WHERE entity_id = $1 AND day = $2`,

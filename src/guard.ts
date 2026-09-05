@@ -8,9 +8,15 @@
 export type ActionType =
   | "pause"
   | "adjust_adset_budget"
-  | "publish_approved_creative";
+  | "publish_approved_creative"
+  // Switch on an ad the guard itself created PAUSED via publish (creative rotation §4a). The mirror
+  // of pause, allowed ONLY for an ad whose approval this guard consumed recently.
+  | "activate";
 
 export type ActionMode = "off" | "confirm" | "auto";
+
+// An ad published by this guard may be switched on only within this long after its publish.
+export const ACTIVATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface CurrentBudget {
   dailyBudget: number | null; // account-currency major units (e.g. AUD)
@@ -83,6 +89,9 @@ export interface GuardDb {
   // skipped; the per-change, account, and spend caps still apply). A thrown
   // error fails closed.
   budgetBaseline30d(entityId: string, day: string): Promise<number | null>;
+  // The publish that CREATED this ad, if this guard made it: the approval_consumptions row whose
+  // published_ref is the ad id. null = not ours -> activate refuses. A thrown error fails closed.
+  publishedAdConsumption(adId: string): Promise<{ consumedAt: Date | null } | null>;
 }
 
 export interface GuardMeta {
@@ -228,7 +237,7 @@ async function evaluateInner(
   // Extracted so PUBLISH runs the IDENTICAL check on its own target rather than a second copy of it.
   // A parallel implementation of campaign isolation would drift from this one, and the guard's whole
   // value is that there is exactly one authority for "may this entity be written to".
-  if (action === "pause" || action === "adjust_adset_budget") {
+  if (action === "pause" || action === "adjust_adset_budget" || action === "activate") {
     const scoped = await checkEntityScope(String(args.entityId), { config, meta });
     if (scoped) return scoped;
   }
@@ -237,6 +246,24 @@ async function evaluateInner(
   if (action === "pause") {
     // Pause only reduces spend — no budget/spend checks needed.
     return { allowed: true, effectiveArgs: { entityId: args.entityId, status: "PAUSED" } };
+  }
+
+  if (action === "activate") {
+    // Only an ad THIS guard created through publish may be switched on, and only soon after: the
+    // approval_consumptions row (written by the publish doer with the new ad id as published_ref) is
+    // the proof. A hand-made ad, an ad set, or an ad published long ago all refuse. Activating lets
+    // the ad spend, so every unknown here is a refusal.
+    const adId = String(args.entityId);
+    const rec = await failClosed(() => db.publishedAdConsumption(adId), "publish_record_unreadable", "publish record");
+    if (!rec.ok) return rec.decision;
+    if (rec.value === null) return refuse("not_our_ad", "no publish by this guard created that ad — only ads it published may be switched on");
+    const at = rec.value.consumedAt instanceof Date ? rec.value.consumedAt.getTime() : NaN;
+    if (!Number.isFinite(at)) return refuse("publish_record_unreadable", "publish record carries no readable time (fail-closed)");
+    const ageMs = deps.now().getTime() - at;
+    if (ageMs > ACTIVATE_MAX_AGE_MS) {
+      return refuse("publish_too_old", `the ad was published ${Math.floor(ageMs / 86_400_000)} days ago; only a recent publish may be switched on`);
+    }
+    return { allowed: true, effectiveArgs: { entityId: adId, status: "ACTIVE" } };
   }
 
   if (action === "adjust_adset_budget") {
@@ -347,6 +374,14 @@ function validateArgs(action: ActionType, args: Record<string, unknown>): Decisi
     return refuse("args_invalid", "arguments must be a non-null object");
   }
   const keys = Object.keys(args);
+  if (action === "activate") {
+    const allowed = new Set(["entityId", "status"]);
+    const extra = keys.filter((k) => !allowed.has(k));
+    if (extra.length) return refuse("args_extra", `activate accepts only entityId+status; got extra: ${extra.join(",")}`);
+    if (typeof args.entityId !== "string" || args.entityId === "") return refuse("args_entity", "entityId required");
+    if (args.status !== "ACTIVE") return refuse("args_status", `activate status must be exactly 'ACTIVE', got '${String(args.status)}'`);
+    return null;
+  }
   if (action === "pause") {
     const allowed = new Set(["entityId", "status"]);
     const extra = keys.filter((k) => !allowed.has(k));

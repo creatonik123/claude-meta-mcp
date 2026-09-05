@@ -74,5 +74,5 @@ test("ship invariant: the allowlist may not exceed ONE campaign (the trial is a 
   );
   // exactly one is acceptable; empty is acceptable only when pause is off (stage 2 arms pause)
   assertShipInvariants({ ...base, allowedCampaignIds: ["120200123"] });
-  assertShipInvariants({ ...base, allowedCampaignIds: [], actionModes: { pause: "off" as const, adjust_adset_budget: "off" as const, publish_approved_creative: "off" as const } });
+  assertShipInvariants({ ...base, allowedCampaignIds: [], actionModes: { pause: "off" as const, adjust_adset_budget: "off" as const, publish_approved_creative: "off" as const, activate: "off" as const } });
 });

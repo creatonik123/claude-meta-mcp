@@ -21,7 +21,7 @@ const baseConfig: GuardConfig = {
   managedAccountId: "act_2218833115522041",
   allowedCampaignIds: ["120200123"],
   deniedAccountIds: ["act_1133075730765139"],
-  actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto" },
+  actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "auto", activate: "auto" },
   accountTimezone: "Australia/North",
   killSwitchEnvFlag: "ADPILOT_KILL_ALL",
   budgetClamp: {
@@ -60,7 +60,7 @@ function makeDeps(o: Overrides = {}): GuardDeps {
       killSwitchRow: async () => false,
       // An approval that IS bound to a target ad set — the shape this change introduces.
       approvalByHash: async () => ({ consumed: false, targetEntityId: TARGET_ADSET }),
-      startOfDayBudget: async () => 100,
+      publishedAdConsumption: async () => null,      startOfDayBudget: async () => 100,
       accountStartOfDayTotal: async () => 1000,
       budgetBaseline30d: async () => 1000,
       ...(o.db ?? {}),
@@ -192,7 +192,7 @@ test("an unreadable approval still refuses", async () => {
 });
 
 test("publish in recommend-only mode is refused regardless of scope", async () => {
-  const d = await publish(makeDeps({ config: { actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "off" } } }));
+  const d = await publish(makeDeps({ config: { actionModes: { pause: "auto", adjust_adset_budget: "auto", publish_approved_creative: "off", activate: "off" } } }));
   assert.equal(d.allowed, false);
   assert.equal(d.code, "action_mode_off");
 });
