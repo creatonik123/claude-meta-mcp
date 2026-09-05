@@ -56,4 +56,16 @@ test("DB integration (test branch): migrations apply + guard-db reads", { skip }
     await sql(`DELETE FROM execution_budget_snapshots WHERE entity_id = $1`, [eid]);
     assert.equal(await db.startOfDayBudget(eid, day), null); // cleaned up
   });
+
+  await t.test("publishedAdConsumption reads the publish doer's consumption row by ad id (the activate proof)", async () => {
+    // approval_consumptions is the APP's table (migration 0011) and is immutable (no UPDATE/DELETE), so
+    // the row is keyed on a unique fake hash and left in place; a re-run finds it already there.
+    const hash = "f".repeat(60) + "0001";
+    const adId = "it_ad_activate_probe";
+    await sql(`INSERT INTO approval_consumptions (binding_hash, published_ref) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [hash, adId]);
+    const rec = await db.publishedAdConsumption(adId);
+    assert.ok(rec && rec.consumedAt instanceof Date && Number.isFinite(rec.consumedAt.getTime()), `expected a consumption with a Date, got ${JSON.stringify(rec)}`);
+    assert.equal(await db.publishedAdConsumption("it_ad_never_published"), null, "an ad nobody published is not ours");
+    await assert.rejects(() => db.publishedAdConsumption(""), /needs an ad id/);
+  });
 });
