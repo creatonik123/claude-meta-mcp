@@ -27,6 +27,8 @@
  */
 import type { AdPublisher } from "./doer-publish.js";
 import type { AdRow } from "./publish-plan.js";
+import { publishVideo } from "./meta-video-publisher.js";
+import type { WaitOptions } from "./video-ready.js";
 
 // The fields of an approved composition needed to build a link ad. Names match the app's
 // fingerprint KEYS exactly — this object IS what the binding hash was computed over.
@@ -51,16 +53,31 @@ export interface MetaPublisherDeps {
   accountId: string;
   post(path: string, body: Record<string, unknown>): Promise<unknown>;
   get(path: string): Promise<Record<string, unknown>>;
+  // Only the video path needs it: video bytes are sent as a multipart file part, not form-encoded.
+  postMultipart?(path: string, parts: Record<string, string | number | boolean | Blob | undefined>): Promise<unknown>;
   // The approved composition for this binding hash (approval_records.composition).
   readComposition(bindingHash: string): Promise<Composition | null>;
   // The finished image bytes, content-addressed (asset_blobs).
   readAsset(sha256: string): Promise<{ bytes: Buffer; mime: string } | null>;
+  // Injected only so tests exercise the video wait's real bound instantly.
+  videoWait?: WaitOptions;
 }
 
 const REQUIRED: Array<keyof Composition> = ["asset_sha256", "cta", "headline", "link", "message", "page_id"];
 
 function nonEmpty(v: unknown): v is string {
   return typeof v === "string" && v.trim() !== "";
+}
+
+// THE CTA RULE, shared by both media paths so the two can never drift apart.
+// With a sealed form: the CTA carries the form and the link leaves the CTA value (a lead ad collects
+// in-form; the destination link stays on the creative's link field). A BLANK form id is treated as
+// absent rather than sent — Meta would accept the empty string as a literal form name.
+export function callToActionFor(comp: Composition): Record<string, unknown> {
+  const formId = typeof comp.lead_gen_form_id === "string" ? comp.lead_gen_form_id.trim() : "";
+  return formId !== ""
+    ? { type: "SIGN_UP", value: { lead_gen_form_id: formId } }
+    : { type: "LEARN_MORE", value: { link: comp.link } };
 }
 
 // Meta returns the uploaded image under an unpredictable key (the field name it was sent as), so the
@@ -219,6 +236,34 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
         throw new Error("meta-publisher: approved image asset is missing or empty — refusing to publish");
       }
 
+      // 2b. WHICH MEDIUM. Decided by the stored asset's own mime, never by a caller argument, so the
+      //     ad can only ever be built as the thing the approved bytes actually are. An unrecognised
+      //     mime refuses: guessing would send, say, a PDF to /adimages.
+      const mime = typeof asset.mime === "string" ? asset.mime.trim().toLowerCase() : "";
+      if (mime.startsWith("video/")) {
+        // Single-format video only (ruled 2026-09-11). A companion rendering alongside a video has no
+        // verified Meta shape, so it refuses with NOTHING consumed rather than publishing a
+        // single-format ad while spending both approvals.
+        if (nonEmpty(companionHash)) {
+          throw new Error("video_companion_unsupported: a video approval cannot carry a companion rendering — refusing to publish");
+        }
+        if (typeof deps.postMultipart !== "function") {
+          throw new Error("video_upload_failed: this publisher has no multipart transport — refusing to publish a video");
+        }
+        return await publishVideo({
+          accountId: deps.accountId,
+          adsetId,
+          name,
+          comp,
+          asset,
+          graph: { post: deps.post, get: deps.get, postMultipart: deps.postMultipart },
+          wait: deps.videoWait,
+        });
+      }
+      if (!mime.startsWith("image/")) {
+        throw new Error(`asset_mime_unsupported: the approved asset is '${mime || "unknown"}' — refusing to publish`);
+      }
+
       // 3. Upload the image. Safe to repeat; an orphan image costs nothing.
       const uploaded = await deps.post(`/${deps.accountId}/adimages`, {
         bytes: asset.bytes.toString("base64"),
@@ -257,11 +302,7 @@ export function createMetaPublisher(deps: MetaPublisherDeps): AdPublisher {
       //    With a sealed form: the CTA carries the form and the link leaves the CTA value (a lead ad
       //    collects in-form; the destination link stays on link_data). A BLANK form id is treated as
       //    absent rather than sent — Meta would accept the empty string as a literal form name.
-      const formId = typeof comp.lead_gen_form_id === "string" ? comp.lead_gen_form_id.trim() : "";
-      const callToAction =
-        formId !== ""
-          ? { type: "SIGN_UP", value: { lead_gen_form_id: formId } }
-          : { type: "LEARN_MORE", value: { link: comp.link } };
+      const callToAction = callToActionFor(comp);
       const created = await deps.post(
         `/${deps.accountId}/adcreatives`,
         companionImageHash
