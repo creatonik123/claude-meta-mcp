@@ -10,6 +10,12 @@ import type { MetaWriter, MetaReader } from "./doer.js";
 export interface GraphClient {
   get<T = unknown>(path: string, params?: Record<string, string | number | boolean | undefined>): Promise<T>;
   post<T = unknown>(path: string, body?: Record<string, string | number | boolean | undefined>): Promise<T>;
+  // Optional so every existing caller and test double stays valid: only the video path needs it.
+  postMultipart?<T = unknown>(
+    path: string,
+    parts: Record<string, string | number | boolean | Blob | undefined>,
+    params?: Record<string, string | number | boolean | undefined>
+  ): Promise<T>;
 }
 
 export function createMetaWriter(client: GraphClient): MetaWriter {
@@ -39,6 +45,8 @@ export function createMetaReader(client: GraphClient): MetaReader {
 export interface PublisherGraph {
   post(path: string, body: Record<string, unknown>): Promise<unknown>;
   get(path: string): Promise<Record<string, unknown>>;
+  // Video bytes cannot be form-encoded: /advideos takes the file as a multipart part named `source`.
+  postMultipart(path: string, parts: Record<string, string | number | boolean | Blob | undefined>): Promise<unknown>;
 }
 
 function encodeGraphField(key: string, v: unknown): string | number | boolean {
@@ -65,6 +73,14 @@ export function createPublisherGraph(client: GraphClient): PublisherGraph {
     // verbatim; axios appends `access_token` with `&` when a `?` is already present.
     get(path) {
       return client.get<Record<string, unknown>>(path);
+    },
+    // Passed through untouched — a multipart body is already in its transmitted form, so the
+    // JSON encoding the post() path needs would corrupt it.
+    postMultipart(path, parts) {
+      if (typeof client.postMultipart !== "function") {
+        throw new Error("meta-adapters: this graph client cannot send multipart — refusing to upload a video");
+      }
+      return client.postMultipart(path, parts);
     },
   };
 }

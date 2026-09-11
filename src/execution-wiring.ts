@@ -147,6 +147,7 @@ export function buildPublishWiring(
       accountId: guardConfig.managedAccountId,
       post: graph.post,
       get: graph.get,
+      postMultipart: graph.postMultipart,
       readComposition: (h) => publishDb.readComposition(h),
       readAsset: (s) => publishDb.readAsset(s),
     }),

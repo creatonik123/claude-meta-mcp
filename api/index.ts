@@ -20,6 +20,11 @@ import { createApp } from "../src/index.js";
 // so the next request retries instead of returning a poisoned rejection forever.
 let appPromise: ReturnType<typeof createApp> | null = null;
 
+// Vercel function config. A video publish uploads the file, then waits for Meta to finish processing
+// it (bounded at 20 checks x 3 s). The platform default would cut the function off mid-wait, which
+// leaves the approval unconsumed but wastes the upload every run.
+export const maxDuration = 120;
+
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   try {
     if (!appPromise) {

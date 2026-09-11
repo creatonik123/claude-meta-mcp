@@ -161,6 +161,16 @@ export async function executePublish(
       createError = e instanceof Error ? e.message : String(e);
     }
 
+    // A PRE-WRITE REFUSAL IS NOT AN UNKNOWN OUTCOME. The video path refuses on its own terms — a
+    // failed upload, a video that never finished processing, no thumbnail, an unsupported companion
+    // or mime — and every one of those happens BEFORE the /ads POST, so no ad can exist. Reporting
+    // them as "an ad may exist" would raise a reconcile alarm on a run that demonstrably created
+    // nothing, and an alarm that cries wolf is how a real unknown gets ignored. These codes are
+    // raised nowhere else; anything else still takes the unknown-outcome path below, alarm intact.
+    if (createError !== null && /^(video_|asset_mime_)/.test(createError)) {
+      return { executed: false, reason: createError.split(":")[0] };
+    }
+
     const adId = createdId(res);
     if (createError !== null || adId === null) {
       // Meta may or may not have created it. We do not know and must not guess. The approval stays
