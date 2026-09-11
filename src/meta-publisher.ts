@@ -65,7 +65,7 @@ export interface MetaPublisherDeps {
 
 const REQUIRED: Array<keyof Composition> = ["asset_sha256", "cta", "headline", "link", "message", "page_id"];
 
-function nonEmpty(v: unknown): v is string {
+export function nonEmpty(v: unknown): v is string {
   return typeof v === "string" && v.trim() !== "";
 }
 

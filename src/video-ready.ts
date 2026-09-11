@@ -25,10 +25,20 @@ export interface WaitOptions {
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// Meta's processing status has been seen described three ways and a read-only probe could not settle
+// which this account returns (the reader token lacks the permission). So all three are read and the
+// FIRST readable one wins. Tolerating the shape is safe in both directions: an unrecognised shape reads
+// as "not ready yet" and the bounded wait refuses, which creates nothing.
 function videoStatusOf(res: unknown): string {
-  const status = (res as { status?: { video_status?: unknown } } | null)?.status;
-  const v = status && typeof status === "object" ? (status as { video_status?: unknown }).video_status : undefined;
-  return typeof v === "string" ? v.trim().toLowerCase() : "";
+  const status = (res as { status?: unknown } | null)?.status;
+  if (typeof status === "string") return status.trim().toLowerCase();
+  if (status && typeof status === "object") {
+    const o = status as { video_status?: unknown; status_code?: unknown };
+    for (const v of [o.video_status, o.status_code]) {
+      if (typeof v === "string" && v.trim() !== "") return v.trim().toLowerCase();
+    }
+  }
+  return "";
 }
 
 /**
@@ -60,4 +70,28 @@ export async function waitUntilReady(
   throw new Error(
     `video_not_ready: video ${id} was still '${last || "unknown"}' after ${attempts} checks — refusing to build a creative`
   );
+}
+
+/**
+ * Meta's auto-generated thumbnails can lag behind "ready" by a few seconds, so an empty list is not
+ * yet an answer. Bounded exactly like the readiness wait: at most `attempts` READS, `delayMs` apart,
+ * and then it refuses. Reads cannot create or spend anything.
+ */
+export async function readThumbnails(
+  graph: ReadyGraph,
+  videoId: string,
+  opts: WaitOptions = {}
+): Promise<Array<{ uri?: unknown; is_preferred?: unknown }>> {
+  const attempts = opts.attempts ?? 5;
+  const delayMs = opts.delayMs ?? 3000;
+  const sleep = opts.sleep ?? defaultSleep;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await sleep(delayMs);
+    const res = await graph.get(`/${videoId}/thumbnails`);
+    const data = (res as { data?: unknown } | null)?.data;
+    if (Array.isArray(data) && data.length > 0) {
+      return data as Array<{ uri?: unknown; is_preferred?: unknown }>;
+    }
+  }
+  return [];
 }

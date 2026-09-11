@@ -165,14 +165,45 @@ test("REFUSAL video_not_ready — 20 bounded checks, then nothing is created", a
   refusalsProven.add("video_not_ready");
 });
 
+test("REFUSAL video_upload_failed — a publisher with no multipart transport uploads nothing", async () => {
+  const { calls, d } = deps();
+  const noMultipart = { ...d };
+  delete (noMultipart as { postMultipart?: unknown }).postMultipart;
+  const { createMetaPublisher: make } = await import("./meta-publisher.ts");
+  await assert.rejects(
+    () => make(noMultipart).createAd({ adsetId: ADSET, name: NAME, approvalHash: HASH }),
+    /video_upload_failed/
+  );
+  assert.equal(calls.length, 0, "a transport-less publisher must not call Meta at all");
+});
+
+test("a thumbnail list that lags behind ready is re-read before refusing", async () => {
+  let n = 0;
+  const { calls, publisher } = deps({
+    get: async (path) => {
+      calls.push({ path, body: {} });
+      if (path.includes("fields=status")) return { status: { video_status: "ready" } };
+      return n++ < 2 ? { data: [] } : { data: [{ uri: THUMB, is_preferred: true }] };
+    },
+  });
+  await publisher.createAd({ adsetId: ADSET, name: NAME, approvalHash: HASH });
+  assert.equal(calls.filter((c) => c.path.includes("/thumbnails")).length, 3);
+  const vd = (calls.find((c) => c.path.endsWith("/adcreatives"))!.body as any).object_story_spec.video_data;
+  assert.equal(vd.image_url, THUMB);
+});
+
 test("REFUSAL video_thumbnail_missing — no usable poster frame creates nothing", async () => {
   const { calls, publisher } = deps({
-    get: async (path) => (path.includes("fields=status") ? { status: { video_status: "ready" } } : { data: [] }),
+    get: async (path) => {
+      calls.push({ path, body: {} });
+      return path.includes("fields=status") ? { status: { video_status: "ready" } } : { data: [] };
+    },
   });
   await assert.rejects(
     () => publisher.createAd({ adsetId: ADSET, name: NAME, approvalHash: HASH }),
     /video_thumbnail_missing/
   );
+  assert.equal(calls.filter((c) => c.path.includes("/thumbnails")).length, 5, "bounded re-reads, then refuse");
   assert.equal(calls.filter((c) => c.path.endsWith("/adcreatives")).length, 0);
   refusalsProven.add("video_thumbnail_missing");
 });

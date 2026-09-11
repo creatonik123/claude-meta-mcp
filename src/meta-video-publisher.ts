@@ -20,8 +20,8 @@
  * Refusal codes raised here: video_upload_failed, video_not_ready (from video-ready), and
  * video_thumbnail_missing.
  */
-import { callToActionFor, type Composition } from "./meta-publisher.js";
-import { waitUntilReady, type WaitOptions } from "./video-ready.js";
+import { callToActionFor, nonEmpty, type Composition } from "./meta-publisher.js";
+import { waitUntilReady, readThumbnails, type WaitOptions } from "./video-ready.js";
 
 export interface VideoGraph {
   post(path: string, body: Record<string, unknown>): Promise<unknown>;
@@ -41,17 +41,11 @@ export interface VideoPublishContext {
   wait?: WaitOptions;
 }
 
-function nonEmpty(v: unknown): v is string {
-  return typeof v === "string" && v.trim() !== "";
-}
-
 // Meta's own preferred thumbnail for the uploaded video. Ruled (2026-09-11): no app-side thumbnail,
 // no migration, no fingerprint change — the poster frame is Meta's, chosen the way Meta's own
 // composer chooses it. `is_preferred` when Meta marks one, else the first it returns.
-function preferredThumbnail(res: unknown): string | null {
-  const data = (res as { data?: unknown } | null)?.data;
-  if (!Array.isArray(data) || data.length === 0) return null;
-  const rows = data as Array<{ uri?: unknown; is_preferred?: unknown }>;
+function preferredThumbnail(rows: Array<{ uri?: unknown; is_preferred?: unknown }>): string | null {
+  if (rows.length === 0) return null;
   const chosen = rows.find((t) => t && t.is_preferred === true) ?? rows[0];
   return nonEmpty(chosen?.uri) ? chosen.uri.trim() : null;
 }
@@ -78,8 +72,8 @@ export async function publishVideo(ctx: VideoPublishContext): Promise<{ id: stri
 
   // 3. Meta's preferred poster frame. A video creative with no image_url is rejected, so an absent
   //    thumbnail refuses here with a readable reason instead of there with "Invalid parameter".
-  const thumbs = await graph.get(`/${vid}/thumbnails`);
-  const imageUrl = preferredThumbnail(thumbs);
+  //    The list can lag behind "ready", so an empty answer is re-read a few times before refusing.
+  const imageUrl = preferredThumbnail(await readThumbnails(graph, vid, { attempts: 5, ...(ctx.wait ?? {}), }));
   if (!imageUrl) {
     throw new Error("video_thumbnail_missing: Meta returned no usable thumbnail for the video — refusing to build a creative");
   }
