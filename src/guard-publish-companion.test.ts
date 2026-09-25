@@ -46,6 +46,7 @@ function makeDeps(): GuardDeps {
     env: {},
     db: {
       schemaVersion: async () => 1,
+      missingSchema: async () => [],
       killSwitchRow: async () => false,
       approvalByHash: async () => ({ consumed: false, targetEntityId: TARGET_ADSET }),
       publishedAdConsumption: async () => null,      startOfDayBudget: async () => 100,

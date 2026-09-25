@@ -29,7 +29,7 @@ export const config = {
     | "error",
   meta: {
     accessToken: required("META_ACCESS_TOKEN"),
-    apiVersion: optional("META_API_VERSION", "v22.0"),
+    apiVersion: optional("META_API_VERSION", "v23.0"),
   },
   /**
    * Bearer token a client must present in the Authorization header when

@@ -158,7 +158,7 @@ The server listens on `PORT` (default `3210`) and exposes:
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `META_ACCESS_TOKEN` | yes | — | Meta System User token (recommended, never expires) or long-lived user access token. Full v0.4 scopes: `ads_read`, `ads_management`, `business_management`, `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `pages_manage_metadata`, `instagram_basic`, `instagram_content_publish`, `instagram_manage_comments`, `instagram_manage_insights`, `catalog_management`. Subsets are allowed — missing scopes simply make the matching tools return 403. |
-| `META_API_VERSION` | no | `v22.0` | Graph API version |
+| `META_API_VERSION` | no | `v23.0` | Graph API version |
 | `AUTH_TOKEN` | yes | — | Shared bearer secret for `POST /mcp`. Generate with `openssl rand -hex 32` |
 | `PUBLIC_URL` | no | `http://localhost:3210` | Public URL (currently informational; v0.2 will use it for OAuth callbacks) |
 | `PORT` | no | `3210` | TCP port to bind |
@@ -191,7 +191,7 @@ See [`.env.example`](./.env.example).
 └─────────────────────┘                      │           │              │
                                              │           ▼              │
                                              │  Meta Graph API client   │
-                                             │  (axios, v22.0)          │
+                                             │  (axios, v23.0)          │
                                              └─────────────┬────────────┘
                                                            │
                                                            ▼

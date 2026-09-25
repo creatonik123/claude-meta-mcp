@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { z } from "zod";
 import assert from "node:assert/strict";
 import {
   TOOL_TO_ACTION,
@@ -59,6 +60,7 @@ function fakeGuardDeps(config: GuardConfig, audits: AuditEntry[]): { guardDeps: 
       env: {},
       db: {
         schemaVersion: async () => 1,
+        missingSchema: async () => [],
         killSwitchRow: async () => false,
         approvalByHash: async () => ({ consumed: false }),
         publishedAdConsumption: async () => null,        startOfDayBudget: async () => 100,
@@ -463,50 +465,71 @@ test("a malformed entityId is refused by the guard, not thrown", async () => {
   assert.equal(payload.decision.code, "args_entity");
 });
 
-// ---- rehearsal (validateOnly): the whole real chain, nothing applied ---------------------------
+// ---- validateOnly is gone: Meta applies validate_only budget writes for real ------------------
 
-test("validateOnly is offered on the budget tool but NEVER reaches the guard's args", async () => {
-  // The guard refuses any key beyond entityId+dailyBudget (args_extra), so if rehearsal ever leaked
-  // into guardArgs every dry run would refuse — and, worse, a future reader would 'fix' it by
-  // loosening the guard's arg check. Pinning both halves here keeps that pressure off the guard.
-  const def = TOOL_DEFS.find((d) => d.name === "adjust_adset_budget");
-  assert.ok(def, "adjust_adset_budget must be defined");
-  assert.ok("validateOnly" in def.inputSchema, "the tool must offer validateOnly");
-  const guardArgs = def.guardArgs({ entityId: "as_1", dailyBudget: 88.5, validateOnly: true });
-  assert.deepEqual(Object.keys(guardArgs).sort(), ["dailyBudget", "entityId"]);
+function refusedFor(res: unknown) {
+  return JSON.parse((res as { content: Array<{ text: string }> }).content[0].text);
+}
+
+test("a budget call carrying validateOnly:true is REFUSED as validate_only_removed and nothing is written", async () => {
+  const mcp = fakeMcp();
+  const audits: AuditEntry[] = [];
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const lockLog: string[] = [];
+  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
+  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock(lockLog) });
+
+  const payload = refusedFor(await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110, validateOnly: true }));
+  assert.equal(payload.decision.allowed, false);
+  assert.equal(payload.decision.code, "validate_only_removed");
+  assert.equal(payload.execution, null);
+  assert.equal(writes.length, 0, "a validate-only request must never reach Meta");
+  const row = audits.find((a) => a.ruleTriggered === "validate_only_removed");
+  assert.ok(row, "the refusal must be audited");
+  assert.equal(row.result, "refused");
 });
 
-test("a rehearsal runs the REAL guard decision and sends Meta the validate-only flag", async () => {
+test("validateOnly:false is refused too — carrying the key at all means the caller expects a rehearsal", async () => {
   const mcp = fakeMcp();
   const audits: AuditEntry[] = [];
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
   const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
   registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
 
-  const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110, validateOnly: true })) as { content: Array<{ text: string }> };
-  const payload = JSON.parse(res.content[0].text);
-  assert.equal(payload.decision.allowed, true, "the real guard must still decide");
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0].body.execution_options, '["validate_only"]');
-  assert.equal(writes[0].body.daily_budget, 11000);
-  assert.equal(payload.execution.executed, false);
-  assert.equal(payload.execution.dryRun, true);
-  // Audited as not_executed: the app's maybe-wrote set must never contain a rehearsal.
-  const row = audits.find((a) => a.result === "not_executed");
-  assert.ok(row, "a rehearsal must be audited as not_executed");
+  for (const v of [false, "yes", 1]) {
+    const payload = refusedFor(await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110, validateOnly: v }));
+    assert.equal(payload.decision.code, "validate_only_removed", `validateOnly=${JSON.stringify(v)}`);
+  }
+  assert.equal(writes.length, 0);
 });
 
-test("a non-boolean validateOnly does NOT arm a rehearsal — it performs the real write", async () => {
-  const mcp = fakeMcp();
-  const audits: AuditEntry[] = [];
-  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
-  const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
-  registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
+// The SDK parses tool input with z.object(shape), which silently drops keys the shape does not
+// declare. Each call therefore goes through that same parse first: a tool whose shape lacks the key
+// would hand the callback clean args and perform a real write.
+test("validateOnly survives MCP input parsing on EVERY write tool and is refused, with nothing written", async () => {
+  const baseArgs: Record<string, Record<string, unknown>> = {
+    pause_entity: { entityId: "as_1" },
+    adjust_adset_budget: { entityId: "as_1", dailyBudget: 110 },
+    publish_approved_creative: { approvalHash: "a".repeat(64) },
+    activate_ad: { entityId: "ad_1" },
+  };
+  assert.deepEqual(Object.keys(baseArgs).sort(), TOOL_DEFS.map((d) => d.name).sort());
+  for (const def of TOOL_DEFS) {
+    const mcp = fakeMcp();
+    const audits: AuditEntry[] = [];
+    const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const { guardDeps, audit } = fakeGuardDeps(autoConfig(), audits);
+    registerGatedWriteTools(mcp, { guardDeps, doerDeps: fakeDoerDeps(writes), audit, accountLock: passLock() });
 
-  const res = (await mcp.tools.adjust_adset_budget.cb({ entityId: "as_1", dailyBudget: 110, validateOnly: "yes" })) as { content: Array<{ text: string }> };
-  const payload = JSON.parse(res.content[0].text);
-  assert.ok(!("execution_options" in writes[0].body), "a truthy string must not be read as a rehearsal");
-  assert.equal(payload.execution.executed, true);
+    const parsed = z.object(def.inputSchema).parse({ ...baseArgs[def.name], validateOnly: true });
+    assert.equal(parsed.validateOnly, true, `${def.name}: the parser must keep validateOnly`);
+    const payload = refusedFor(await mcp.tools[def.name].cb(parsed));
+    assert.equal(payload.decision.code, "validate_only_removed", `${def.name}`);
+    assert.equal(writes.length, 0, `${def.name}: nothing may be written`);
+    const row = audits.find((a) => a.ruleTriggered === "validate_only_removed");
+    assert.equal(row?.action, TOOL_TO_ACTION[def.name], `${def.name}: audited against its own action`);
+    assert.ok(!("validateOnly" in def.guardArgs(parsed)), `${def.name}: the guard never sees the key`);
+  }
 });
 
 test("without validateOnly the budget write is unchanged — no flag, real write, verified", async () => {
@@ -532,5 +555,5 @@ test("activate_ad guardArgs pin status ACTIVE and forward only the entity id —
   const def = TOOL_DEFS.find((d) => d.name === "activate_ad");
   assert.ok(def, "activate_ad is a registered gated tool");
   assert.deepEqual(def.guardArgs({ entityId: "ad_1", status: "PAUSED", name: "x" }), { entityId: "ad_1", status: "ACTIVE" });
-  assert.deepEqual(Object.keys(def.inputSchema), ["entityId"]);
+  assert.deepEqual(Object.keys(def.inputSchema), ["entityId", "validateOnly"]);
 });

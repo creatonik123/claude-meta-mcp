@@ -30,6 +30,7 @@ function deps(o: { config?: Partial<GuardConfig>; db?: Partial<GuardDeps["db"]>;
     env: o.env ?? {},
     db: {
       schemaVersion: async () => 1,
+      missingSchema: async () => [],
       killSwitchRow: async () => false,
       approvalByHash: async () => ({ consumed: false }),
       startOfDayBudget: async () => 100,

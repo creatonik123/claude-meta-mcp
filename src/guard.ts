@@ -76,6 +76,10 @@ export interface GuardConfig {
 export interface GuardDb {
   killSwitchRow(): Promise<boolean | null>; // true=frozen, null=missing/unknown
   schemaVersion(): Promise<number | null>;
+  // Names of required tables ("t") or columns ("t.c") absent from the database; [] = all present.
+  // The recorded schema version never moves past 1, so it cannot prove these exist. A thrown error or
+  // a non-list refuses.
+  missingSchema(): Promise<string[]>;
   // targetEntityId: the ad set this approval authorises publishing INTO. Required for publish — the
   // guard runs it through checkEntityScope so campaign isolation applies to creation too. Optional in
   // the type only because older rows predate it; an absent value refuses (approval_no_target).
@@ -211,6 +215,14 @@ async function evaluateInner(
   if (!sv.ok) return sv.decision;
   if (sv.value !== config.schemaVersion) {
     return refuse("schema_mismatch", `schema version ${sv.value} != expected ${config.schemaVersion}`);
+  }
+  const ms = await failClosed(() => db.missingSchema(), "schema_unreadable", "schema presence");
+  if (!ms.ok) return ms.decision;
+  if (!Array.isArray(ms.value) || ms.value.some((n) => typeof n !== "string")) {
+    return refuse("schema_unreadable", "schema presence check returned an unreadable result (fail-closed)");
+  }
+  if (ms.value.length > 0) {
+    return refuse(`schema_missing:${ms.value[0]}`, `database is missing: ${ms.value.join(", ")} — writes refused until the app migrations are applied`);
   }
 
   // 3. Kill switch — DB row. Missing/unknown (null) = treat as frozen.
@@ -495,6 +507,16 @@ async function evaluateBudget(args: Record<string, unknown>, deps: GuardDeps): P
   const entityCurrent = cb.value.dailyBudget;
   if (!isFinitePositive(entityCurrent)) {
     return refuse("budget_unknown", "entity's current daily budget unreadable — refused (fail-closed)");
+  }
+  // The clamp is anchored to the start-of-day baseline, so after a mid-day raise by a human its
+  // ceiling can sit below the live budget. Writing the clamped value then would CUT a budget the
+  // caller asked to scale. Only a clamp that actually bit is refused: a decrease the caller asked
+  // for is written as asked.
+  if (requested > maxUp && clamped < entityCurrent) {
+    return refuse(
+      "clamp_below_live",
+      `clamped budget ${clamped.toFixed(2)} is below the live budget ${entityCurrent.toFixed(2)} — a clamp must never reduce a budget, refused`
+    );
   }
   // Accepted residual: this classification uses the currentBudget read above,
   // so a human edit landing between that read and this decision can misgate

@@ -84,3 +84,36 @@ test("malformed values from the DB coerce to null (guard then refuses fail-safe)
   assert.equal(await createGuardDb(fakeSql(() => [{ avg: "Infinity" }])).budgetBaseline30d("as_1", "2026-06-28"), null);
   assert.equal(await createGuardDb(fakeSql(() => [{ active: "t" }])).killSwitchRow(), null); // non-boolean -> unknown -> frozen
 });
+
+// Every (table, column) the guard itself reads, as the app's migrations create them.
+const PRESENT = [
+  ["kill_switch", "active"],
+  ["guard_schema_version", "version"],
+  ["approval_records", "binding_hash"],
+  ["approval_records", "target_entity_id"],
+  ["approval_consumptions", "binding_hash"],
+  ["approval_consumptions", "published_ref"],
+  ["approval_consumptions", "consumed_at"],
+  ["execution_budget_snapshots", "daily_budget"],
+].map(([table_name, column_name]) => ({ table_name, column_name }));
+
+test("missingSchema returns [] when every required table and column is present", async () => {
+  const sql = fakeSql(() => PRESENT);
+  assert.deepEqual(await createGuardDb(sql).missingSchema(), []);
+  assert.match(sql.calls[0].text, /information_schema\.columns/i);
+});
+
+test("missingSchema names a whole missing table once, not each of its columns", async () => {
+  const db = createGuardDb(fakeSql(() => PRESENT.filter((r) => r.table_name !== "approval_consumptions")));
+  assert.deepEqual(await db.missingSchema(), ["approval_consumptions"]);
+});
+
+test("missingSchema names a missing column as table.column", async () => {
+  const db = createGuardDb(fakeSql(() => PRESENT.filter((r) => r.column_name !== "target_entity_id")));
+  assert.deepEqual(await db.missingSchema(), ["approval_records.target_entity_id"]);
+});
+
+test("missingSchema throws on a malformed row rather than guessing", async () => {
+  const db = createGuardDb(fakeSql(() => [...PRESENT, { table_name: 7, column_name: null }]));
+  await assert.rejects(() => db.missingSchema(), /unreadable/i);
+});

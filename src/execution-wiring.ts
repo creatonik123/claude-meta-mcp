@@ -209,6 +209,16 @@ export function buildExecutionDeps(
 // fields a caller smuggles in never reach the guard or the write path.
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
+// Declared on every write tool only so the MCP parser passes it through to be refused: the parser
+// drops undeclared keys, and a stripped key would turn a caller's intended rehearsal into a silent
+// live write. Meta applies a validate_only budget write for real, so there is no rehearsal to offer.
+// A named constant rather than an inline zod chain, so the app's executor contract does not read it
+// as a field the executor is expected to send.
+const REFUSED_VALIDATE_ONLY = z
+  .unknown()
+  .optional()
+  .describe("Removed. Any request carrying this field is refused; nothing is written.");
+
 export const TOOL_DEFS: Array<{
   name: string;
   description: string;
@@ -219,7 +229,7 @@ export const TOOL_DEFS: Array<{
     name: "pause_entity",
     description:
       "Pause an ad or ad set on the managed account. Guarded: kill switch, action mode, account scope and audit apply; refusals return structured reasons.",
-    inputSchema: { entityId: z.string().min(1).describe("Ad or ad set id") },
+    inputSchema: { entityId: z.string().min(1).describe("Ad or ad set id"), validateOnly: REFUSED_VALIDATE_ONLY },
     guardArgs: (a) => ({ entityId: str(a.entityId), status: "PAUSED" }),
   },
   {
@@ -229,14 +239,8 @@ export const TOOL_DEFS: Array<{
     inputSchema: {
       entityId: z.string().min(1).describe("Ad set id"),
       dailyBudget: z.number().describe("Requested daily budget, major units"),
-      validateOnly: z
-        .boolean()
-        .optional()
-        .describe("Rehearse only: run every guard check and ask Meta to validate the write without applying it. Nothing changes."),
+      validateOnly: REFUSED_VALIDATE_ONLY,
     },
-    // validateOnly is DELIBERATELY absent from guardArgs. The guard's own validator refuses any key
-    // beyond entityId+dailyBudget (args_extra), and rehearsal is a transport concern, not part of the
-    // decision — so the args the guard sees stay byte-for-byte what they were before this flag existed.
     guardArgs: (a) => ({ entityId: str(a.entityId), dailyBudget: a.dailyBudget }),
   },
   {
@@ -251,6 +255,7 @@ export const TOOL_DEFS: Array<{
     inputSchema: {
       approvalHash: z.string().min(1).describe("Approval record hash"),
       companionHash: z.string().min(1).optional().describe("Approval record hash of the other rendering (vertical) of the same creative"),
+      validateOnly: REFUSED_VALIDATE_ONLY,
     },
     guardArgs: (a) => ({
       approvalHash: str(a.approvalHash),
@@ -261,7 +266,7 @@ export const TOOL_DEFS: Array<{
     name: "activate_ad",
     description:
       "Switch on an ad that THIS guard created PAUSED through publish_approved_creative within the last 7 days. Guarded: refused for any other ad, any ad set, any other campaign; kill switch and audit apply.",
-    inputSchema: { entityId: z.string().min(1).describe("Ad id returned by publish_approved_creative") },
+    inputSchema: { entityId: z.string().min(1).describe("Ad id returned by publish_approved_creative"), validateOnly: REFUSED_VALIDATE_ONLY },
     guardArgs: (a) => ({ entityId: str(a.entityId), status: "ACTIVE" }),
   },
 ];
@@ -279,15 +284,12 @@ export function registerGatedWriteTools(
 ): string[] {
   const registered: string[] = [];
 
-  const decideAndExecute = async (action: ActionType, guardArgs: Record<string, unknown>, validateOnly = false) => {
+  const decideAndExecute = async (action: ActionType, guardArgs: Record<string, unknown>) => {
     // Decision first (always audited); execution only on an allow. An
     // unlogged allow is downgraded to a refusal inside runGuardedDecision.
     const decision = await runGuardedDecision(action, guardArgs, deps.guardDeps, deps.audit);
-    // A rehearsal only ever ADDS the validate-only flag; every other dep is the real one, so the
-    // decision, the clamps and the body are the production ones and not a parallel code path.
-    const doerDeps = validateOnly === true ? { ...deps.doerDeps, validateOnly: true } : deps.doerDeps;
     const outcome = decision.allowed
-      ? await executeAndAudit(action, decision, doerDeps, deps.audit, deps.guardDeps.now)
+      ? await executeAndAudit(action, decision, deps.doerDeps, deps.audit, deps.guardDeps.now)
       : null;
     const payload = {
       decision,
@@ -297,7 +299,7 @@ export function registerGatedWriteTools(
     return { content: [{ type: "text", text: JSON.stringify(payload) }] };
   };
 
-  const refuseLocked = async (
+  const refuseBeforeDecision = async (
     action: ActionType,
     guardArgs: Record<string, unknown>,
     code: string,
@@ -314,7 +316,7 @@ export function registerGatedWriteTools(
       await deps.audit.write({
         ts,
         actor: "agent",
-        action: "adjust_adset_budget",
+        action,
         entityId: typeof guardArgs.entityId === "string" ? guardArgs.entityId : null,
         ruleTriggered: decision.code,
         result: "refused",
@@ -333,9 +335,16 @@ export function registerGatedWriteTools(
       { description: def.description, inputSchema: def.inputSchema },
       async (args: Record<string, unknown>) => {
         const guardArgs = def.guardArgs(args ?? {});
-        // Only ever true when the caller explicitly passed the boolean true — a truthy string or 1
-        // must not arm a rehearsal by accident, and the schema already rejects non-booleans.
-        const validateOnly = (args ?? {}).validateOnly === true;
+        // Refused before any lock or Meta read: a caller sending this expects nothing to change, and
+        // the only thing the old flag ever did on a budget was change it.
+        if (args != null && Object.prototype.hasOwnProperty.call(args, "validateOnly")) {
+          return refuseBeforeDecision(
+            action,
+            guardArgs,
+            "validate_only_removed",
+            "validateOnly is no longer supported: Meta applies validate_only budget writes, so it was a real write — refused, nothing written"
+          );
+        }
         if (action !== "adjust_adset_budget") {
           return decideAndExecute(action, guardArgs);
         }
@@ -347,10 +356,10 @@ export function registerGatedWriteTools(
           locked = await lock.acquire();
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          return refuseLocked(action, guardArgs, "account_lock_unavailable", `could not reach the budget lock store — refused (fail-closed): ${msg}`);
+          return refuseBeforeDecision(action, guardArgs, "account_lock_unavailable", `could not reach the budget lock store — refused (fail-closed): ${msg}`);
         }
         if (!locked) {
-          return refuseLocked(
+          return refuseBeforeDecision(
             action,
             guardArgs,
             "account_budget_locked",
@@ -358,7 +367,7 @@ export function registerGatedWriteTools(
           );
         }
         try {
-          return await decideAndExecute(action, guardArgs, validateOnly);
+          return await decideAndExecute(action, guardArgs);
         } finally {
           try {
             await lock.release();
