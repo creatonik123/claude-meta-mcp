@@ -57,6 +57,7 @@ function makeDeps(o: Overrides = {}): GuardDeps {
     env: {},
     db: {
       schemaVersion: async () => 1,
+      missingSchema: async () => [],
       killSwitchRow: async () => false,
       // An approval that IS bound to a target ad set — the shape this change introduces.
       approvalByHash: async () => ({ consumed: false, targetEntityId: TARGET_ADSET }),

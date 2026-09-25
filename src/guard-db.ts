@@ -25,8 +25,48 @@ const num = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+// The tables and columns the guard itself reads, with the app migration that creates each one.
+const REQUIRED_SCHEMA: ReadonlyArray<readonly [table: string, column: string]> = [
+  ["kill_switch", "active"], // 0003
+  ["guard_schema_version", "version"], // 0005
+  ["execution_budget_snapshots", "daily_budget"], // 0005
+  ["approval_records", "binding_hash"], // 0002
+  ["approval_records", "target_entity_id"], // 0010
+  ["approval_consumptions", "binding_hash"], // 0011
+  ["approval_consumptions", "published_ref"], // 0011
+  ["approval_consumptions", "consumed_at"], // 0011
+];
+
 export function createGuardDb(sql: Sql): GuardDb {
   return {
+    async missingSchema() {
+      const tables = [...new Set(REQUIRED_SCHEMA.map(([t]) => t))];
+      const rows = await sql(
+        `SELECT table_name, column_name FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = ANY($1::text[])`,
+        [tables]
+      );
+      const present = new Set<string>();
+      const tablesSeen = new Set<string>();
+      for (const r of rows) {
+        if (typeof r.table_name !== "string" || typeof r.column_name !== "string") {
+          throw new Error("guard-db: unreadable row from information_schema.columns");
+        }
+        tablesSeen.add(r.table_name);
+        present.add(`${r.table_name}.${r.column_name}`);
+      }
+      const missing: string[] = [];
+      for (const t of tables) {
+        if (!tablesSeen.has(t)) {
+          missing.push(t);
+          continue;
+        }
+        for (const [tt, c] of REQUIRED_SCHEMA) {
+          if (tt === t && !present.has(`${t}.${c}`)) missing.push(`${t}.${c}`);
+        }
+      }
+      return missing;
+    },
     async killSwitchRow() {
       const rows = await sql(`SELECT active FROM kill_switch WHERE id = 1`, []);
       if (rows.length === 0) return null; // missing -> guard treats as frozen

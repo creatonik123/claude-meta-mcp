@@ -28,6 +28,7 @@ import { loadGuardConfig, assertShipInvariants } from "./load-config.js";
 import { resolveExecutionEnabled } from "./execution-config.js";
 import { wireExecution } from "./execution-wiring.js";
 import { VERSION, buildInfo } from "./version.js";
+import { bearerTokenMatches } from "./bearer.js";
 
 function log(
   level: "debug" | "info" | "warn" | "error",
@@ -48,8 +49,7 @@ function log(
 
 function bearerAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.header("authorization") ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(header);
-  if (!match || match[1] !== config.authToken) {
+  if (!bearerTokenMatches(header, config.authToken)) {
     log("warn", "rejected unauthenticated MCP request", {
       ip: req.ip,
       path: req.path,

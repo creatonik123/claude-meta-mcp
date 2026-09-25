@@ -50,6 +50,7 @@ function makeDeps(o: DeepOverrides = {}): GuardDeps {
     env: o.env ?? {},
     db: {
       schemaVersion: async () => 1,
+      missingSchema: async () => [],
       killSwitchRow: async () => false,
       approvalByHash: async () => ({ consumed: false }),
       publishedAdConsumption: async () => null,      startOfDayBudget: async () => 100,
@@ -136,6 +137,24 @@ test("kill switch read THROWS -> refuse (fail-closed)", async () => {
 test("schema version mismatch -> refuse", async () => {
   const d = await evaluate("pause", pause(), makeDeps({ db: { schemaVersion: async () => 2 } }));
   expectRefuse(d, "schema_mismatch");
+});
+
+// The app never bumps guard_schema_version past 1, so the version alone cannot tell the guard that
+// the tables it reads exist. A missing one is named in the refusal.
+test("a required table or column missing -> refuse schema_missing:<name>", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ db: { missingSchema: async () => ["approval_consumptions", "approval_records.target_entity_id"] } }));
+  expectRefuse(d, "schema_missing:approval_consumptions");
+  if (d.allowed === false) assert.match(d.reason, /approval_records\.target_entity_id/);
+});
+
+test("schema presence read throws -> refuse schema_unreadable (fail-closed)", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ db: { missingSchema: async () => { throw new Error("x"); } } }));
+  expectRefuse(d, "schema_unreadable");
+});
+
+test("schema presence read returns a non-list -> refuse schema_unreadable (never read as 'nothing missing')", async () => {
+  const d = await evaluate("pause", pause(), makeDeps({ db: { missingSchema: async () => null as unknown as string[] } }));
+  expectRefuse(d, "schema_unreadable");
 });
 
 // ---- action mode ----
@@ -356,6 +375,37 @@ test("a live DECREASE above the frozen baseline skips account/spend ceilings (wa
   }));
   expectAllow(d);
   assert.equal(d.effectiveArgs.dailyBudget, 120);
+});
+
+// ---- the clamp must never cut a live budget -----------------------------------------------------
+const liveAt = (dailyBudget: number) => ({
+  currentBudget: async () => ({ dailyBudget, lifetimeBudget: null, ownedByCampaignCbo: false, effectiveStatus: "ACTIVE" }),
+  accountActiveDailyBudgetTotal: async () => ({ total: 1000, entityCounted: dailyBudget }),
+});
+
+test("a raise clamped BELOW the live budget refuses clamp_below_live instead of cutting it", async () => {
+  // baseline 100 (clamp ceiling 125); a human raised the ad set to 150 mid-day. Asking for 160 would
+  // clamp to 125 and write a CUT of 25 while the caller asked to scale up.
+  const d = await evaluate("adjust_adset_budget", budget(160), makeDeps({ meta: liveAt(150) }));
+  expectRefuse(d, "clamp_below_live");
+});
+
+test("a small decrease the clamp would deepen past what was asked refuses clamp_below_live", async () => {
+  // live 150, asked 140; the clamp ceiling 125 would write 125, lower than both live and the request.
+  const d = await evaluate("adjust_adset_budget", budget(140), makeDeps({ meta: liveAt(150) }));
+  expectRefuse(d, "clamp_below_live");
+});
+
+test("a clamp that lands exactly ON the live budget is allowed (no cut)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(160), makeDeps({ meta: liveAt(125) }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 125);
+});
+
+test("an unclamped decrease below live is still allowed (walk-down is a request, not a clamp)", async () => {
+  const d = await evaluate("adjust_adset_budget", budget(90), makeDeps({ meta: liveAt(150) }));
+  expectAllow(d);
+  assert.equal(d.effectiveArgs.dailyBudget, 90);
 });
 
 // ---- pins the `- entityCurrent` swap in the projection (allow-case) ----
